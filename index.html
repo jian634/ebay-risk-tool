@@ -1,0 +1,1052 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>eBay Heavy Goods Risk Detection</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; background: #f5f6fa; color: #222; }
+
+  header {
+    background: #3665f3;
+    color: white;
+    padding: 20px 40px;
+  }
+  header h1 { font-size: 20px; }
+  header p { font-size: 13px; opacity: 0.8; margin-top: 4px; }
+
+  .container { max-width: 860px; margin: 30px auto; padding: 0 20px; }
+
+  .card {
+    background: white;
+    border-radius: 8px;
+    padding: 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  }
+  .card h2 { font-size: 15px; color: #3665f3; margin-bottom: 16px; border-bottom: 1px solid #eee; padding-bottom: 8px; }
+
+  .form-row { display: flex; gap: 16px; margin-bottom: 14px; }
+  .form-group { flex: 1; }
+  .form-group label { display: block; font-size: 12px; color: #555; margin-bottom: 4px; font-weight: bold; }
+  .form-group input, .form-group select {
+    width: 100%; padding: 8px 10px; border: 1px solid #ddd;
+    border-radius: 4px; font-size: 14px;
+  }
+  .form-group input:focus, .form-group select:focus {
+    outline: none; border-color: #3665f3;
+  }
+
+  .checkbox-group { display: flex; flex-direction: column; gap: 8px; }
+  .checkbox-group label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; font-weight: normal; cursor: pointer; }
+  .checkbox-group input[type=checkbox] { margin-top: 2px; width: 15px; height: 15px; }
+
+  .btn {
+    display: block; width: 100%; padding: 12px;
+    background: #3665f3; color: white; border: none;
+    border-radius: 6px; font-size: 16px; font-weight: bold;
+    cursor: pointer; margin-top: 8px;
+  }
+  .btn:hover { background: #2851d0; }
+
+  #result { display: none; }
+
+  .result-header {
+    display: flex; align-items: center; gap: 20px;
+    padding: 20px; border-radius: 8px; margin-bottom: 16px;
+  }
+  .result-header.low    { background: #e6f4ea; border-left: 6px solid #34a853; }
+  .result-header.medium { background: #fff8e1; border-left: 6px solid #fbbc04; }
+  .result-header.high   { background: #fce8e6; border-left: 6px solid #ea4335; }
+  .result-header.block  { background: #fce8e6; border-left: 6px solid #c62828; }
+
+  .score-big { font-size: 52px; font-weight: bold; min-width: 80px; text-align: center; }
+  .result-label { font-size: 18px; font-weight: bold; }
+  .result-action { font-size: 13px; margin-top: 4px; color: #555; }
+
+  .module-scores { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .module-card {
+    border: 1px solid #eee; border-radius: 6px; padding: 12px;
+  }
+  .module-card .mod-name { font-size: 12px; color: #888; }
+  .module-card .mod-score { font-size: 24px; font-weight: bold; }
+  .module-card .mod-reason { font-size: 12px; color: #555; margin-top: 4px; }
+  .bar { height: 6px; background: #eee; border-radius: 3px; margin-top: 6px; }
+  .bar-fill { height: 100%; border-radius: 3px; }
+
+  .size-check { padding: 10px 14px; border-radius: 6px; font-size: 13px; font-weight: bold; margin-bottom: 16px; }
+  .size-check.pass { background: #e6f4ea; color: #2e7d32; }
+  .size-check.fail { background: #fce8e6; color: #c62828; }
+
+  .tier-box {
+    display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .tier-item {
+    flex: 1; min-width: 140px; padding: 12px; border-radius: 6px;
+    border: 2px solid #eee; text-align: center; opacity: 0.4;
+  }
+  .tier-item.active { opacity: 1; border-color: #3665f3; background: #f0f4ff; }
+  .tier-item.active.cliff { border-color: #e53238; background: #fff0f0; }
+  .tier-item .tier-name { font-size: 12px; color: #555; }
+  .tier-item .tier-range { font-size: 11px; color: #999; margin-bottom: 4px; }
+  .tier-item .tier-pct { font-size: 22px; font-weight: bold; color: #3665f3; }
+  .tier-item.active.cliff .tier-pct { color: #e53238; }
+  .tier-item .tier-reward { font-size: 11px; color: #888; margin-top: 2px; }
+  .cliff-alert {
+    background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px;
+    padding: 10px 14px; font-size: 13px; color: #856404; margin-bottom: 12px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>eBay Q3 Heavy Goods — Gaming Risk Detection Tool</h1>
+  <p>输入刊登信息，自动评估超大件虚报风险 | Phase 1 Rule Engine</p>
+</header>
+
+<div class="container">
+
+  <!-- INPUT FORM -->
+  <div class="card" id="form-card">
+    <h2>刊登信息输入</h2>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>品类 Category</label>
+        <select id="category">
+          <option value="">-- 选择品类 --</option>
+          <optgroup label="─── 汽摩配 Parts &amp; Accessories ───">
+          <option value="c36475">Body Kits 车身套件 [36475]</option>
+          <option value="c33640">Bumpers & Reinforcements 保险杠 [33640]</option>
+          <option value="c33644">Fenders 翼子板 [33644]</option>
+          <option value="c33646">Hood Panels 发动机舱盖 [33646]</option>
+          <option value="c179850">Doors & Door Skins 门板 [179850]</option>
+          <option value="c33580">Control Arms, Ball Joints 控制臂 [33580]</option>
+          <option value="c33564">Brake Rotors/Drums 制动盘 [33564]</option>
+          <option value="c262241">Clutch Kits 离合器套件 [262241]</option>
+          <option value="c33615">Engines 发动机 [33615]</option>
+          <option value="c171115">Transmissions 变速箱 [171115]</option>
+          <option value="c33655">Truck Bed Accessories 皮卡后盖盖板 [33655]</option>
+          <option value="c33638">Spoilers & Wings 扰流板和尾翼 [33638]</option>
+          <option value="c33650">Running Boards & Step Bars 踏板和踏杆 [33650]</option>
+          <option value="c33651">Roof Racks & Cross Bars 车顶架和横杆 [33651]</option>
+          <option value="c33656">Hatches & Trunk Lids 舱口盖和行李箱盖 [33656]</option>
+          <option value="c262166">Body Side & Quarter Panels 车身侧板叶子板 [262166]</option>
+          <option value="c262146">Bumper Inserts & Covers 保险杠插件和盖板 [262146]</option>
+          <option value="c38658">Air Dams 气坝 [38658]</option>
+          <option value="c33589">Gearboxes, Rack & Pinions 齿轮箱转向机 [33589]</option>
+          <option value="c42609">Other Steering & Suspension 转向和悬架零件 [42609]</option>
+          <option value="c33585">Lift Kits & Parts 升降机套件和零件 [33585]</option>
+          <option value="c262152">Frame Rails & Subframes 车架纵梁和副车架 [262152]</option>
+          <option value="c33602">Radiators 散热器 [33602]</option>
+          <option value="c262251">Driveshafts 传动轴 [262251]</option>
+          <option value="c262245">Differential Assemblies 差速器总成 [262245]</option>
+          <option value="c33728">Axle Housings & Parts 车桥壳及零件 [33728]</option>
+          <option value="c262249">Additional Differential Parts 附加差速器零件 [262249]</option>
+          <option value="c173511">Brake Component Kits 制动盘片套装 [173511]</option>
+          <option value="c63699">Tire Changers/Wheel Balancers 轮胎拆装机 [63699]</option>
+          <option value="c63700">Other Shop Equipment 汽修车间设备 [63700]</option>
+          <option value="c179507">Engine Hoists & Stands 发动机吊机和支架 [179507]</option>
+          <option value="c179661">Service Ramps 服务坡道 [179661]</option>
+          <option value="c178918">ATV Windshields & Windows ATV挡风玻璃 [178918]</option>
+          <option value="c43973">ATV Fenders ATV轮眉 [43973]</option>
+          <option value="c178917">ATV Cabs, Doors & Parts ATV驾驶室车门及零件 [178917]</option>
+          <option value="c33701">Seats 汽车座椅 [33701]</option>
+          <option value="c262191">Dash Panels 仪表板 [262191]</option>
+          <option value="c147699">Motorcycle Wheels & Rims 摩托车轮毂 [147699]</option>
+          <option value="c33556">Fuel Tanks & Filler Necks 油箱和加油口 [33556]</option>
+          <option value="c262256">Transfer Cases 分动箱 [262256]</option>
+          <option value="c184695">Commercial Truck Air Compressors 商用卡车空气压缩机 [184695]</option>
+          <option value="c171108">Complete Motorcycle Engines 摩托车发动机总成 [171108]</option>
+          <option value="c179445">Truck Tool Boxes 卡车工具箱 [179445]</option>
+          <option value="c179515">Wheel Alignment Systems/Tools 车轮定位系统工具 [179515]</option>
+          <option value="c63698">Paint Booths 喷漆房 [63698]</option>
+          <option value="c35562">Motorcycle Frames & Parts 摩托车车架及零件 [35562]</option>
+          <option value="c262099">EV Charging Stations 电动汽车充电桩 [262099]</option>
+          <option value="c171106">Complete Trolling Motors 拖钓船马达 [171106]</option>
+          </optgroup>
+          <optgroup label="家居 Home & Garden">
+          <option value="c38208">Sofas & Sectionals 沙发 [38208]</option>
+          <option value="c175758">Beds & Bed Frames 床架 [175758]</option>
+          <option value="c20713">Refrigerators 冰箱 [20713]</option>
+          <option value="c71256">Washing Machines 洗衣机 [71256]</option>
+          <option value="c41981">Solar Panels & Kits 太阳能电池板和套件 [41981]</option>
+          <option value="c259285">Solar Cells & Kits 太阳能电池和套件 [259285]</option>
+          <option value="c131588">Mattresses 床垫 [131588]</option>
+          <option value="c54235">Chairs 椅子 [54235]</option>
+          <option value="c88057">Home Office Desks 家庭办公桌 [88057]</option>
+          <option value="c20487">Cabinets & Cupboards 橱柜 [20487]</option>
+          <option value="c38204">Tables 桌子 [38204]</option>
+          <option value="c20488">TV Stands & Entertainment Units 电视柜 [20488]</option>
+          <option value="c114397">Dressers & Chests of Drawers 梳妆台和抽屉柜 [114397]</option>
+          <option value="c139956">Sheds, Summerhouses & Carports 棚屋凉亭和车棚 [139956]</option>
+          <option value="c180992">Awnings & Canopies 遮阳篷和檐篷 [180992]</option>
+          <option value="c180995">Gazebos & Pergolas 凉亭和凉棚 [180995]</option>
+          <option value="c151621">Barbecues, Grills & Smokers 烧烤炉烤架 [151621]</option>
+          <option value="c42239">Pool Heaters & Solar Panels 泳池加热器 [42239]</option>
+          <option value="c181054">Saunas 桑拿 [181054]</option>
+          <option value="c185108">Central Air Conditioners 中央空调 [185108]</option>
+          <option value="c185111">Window & Wall Air Conditioners 窗式壁挂空调 [185111]</option>
+          <option value="c260921">Lawn Mowers 割草机 [260921]</option>
+          <option value="c71253">Range Hoods 抽油烟机 [71253]</option>
+          <option value="c71318">Wall Ovens 壁挂式烤箱 [71318]</option>
+          <option value="c71250">Ranges & Stoves 炉灶 [71250]</option>
+          <option value="c177750">Wine Fridges & Cellars 酒柜和酒窖 [177750]</option>
+          <option value="c147147">Shower Doors 淋浴门 [147147]</option>
+          <option value="c42025">Bathtubs 浴缸 [42025]</option>
+          <option value="c85892">Doors 门 [85892]</option>
+          </optgroup>
+          <optgroup label="工商业 Business & Industrial">
+          <option value="c33082">Generators 发电机 [33082]</option>
+          <option value="c67171">Commercial Ice Machines 商用制冰机 [67171]</option>
+          <option value="c97185">Forklifts & Lift Trucks 叉车 [97185]</option>
+          <option value="c97122">Excavators 挖掘机 [97122]</option>
+          <option value="c97126">Other Heavy Equipment Parts 其他重型设备零件 [97126]</option>
+          <option value="c95494">Skid Steer Loaders 滑移装载机 [95494]</option>
+          <option value="c11752">Other Heavy Equipment Attachments 重型设备附件 [11752]</option>
+          <option value="c50908">Buckets 水桶 [50908]</option>
+          <option value="c259089">Engine Cooling Systems 发动机冷却系统 [259089]</option>
+          <option value="c259088">Complete Engines & Engine Parts 完整发动机和零件 [259088]</option>
+          <option value="c41488">Forks & Fork Extensions 货叉和货叉加长件 [41488]</option>
+          <option value="c63924">Wood Chippers, Stump Grinders 木材削片机树桩研磨机 [63924]</option>
+          <option value="c41492">Compactors & Asphalt Rollers 压实机和沥青压路机 [41492]</option>
+          <option value="c97123">Scissor & Boom Lifts 剪叉式高空作业平台 [97123]</option>
+          <option value="c259048">Grapples 抓斗 [259048]</option>
+          <option value="c95495">Trailers 拖车 [95495]</option>
+          <option value="c58161">Wheel Loaders 轮式装载机 [58161]</option>
+          <option value="c78192">Variable Frequency Drives 变频驱动器 [78192]</option>
+          <option value="c46744">Engraving 雕刻机 [46744]</option>
+          <option value="c258662">Reach-In Refrigerators & Freezers 伸手式冰箱冰柜 [258662]</option>
+          <option value="c67167">Soft Serve Ice Cream Machines 软冰淇淋机 [67167]</option>
+          <option value="c258661">Merchandising Glass Door Fridges 推销玻璃门冰箱冰柜 [258661]</option>
+          <option value="c258845">Refrigerated Prep Tables 冷藏准备台 [258845]</option>
+          <option value="c258623">Commercial Mixers 商用搅拌机 [258623]</option>
+          <option value="c258634">Commercial Hoods 商用抽油烟机 [258634]</option>
+          <option value="c11888">Snack & Food Machines 零食和食品机械 [11888]</option>
+          <option value="c11808">Sealers & Sealing Machines 封口机 [11808]</option>
+          <option value="c184247">Packing Machines 包装机 [184247]</option>
+          <option value="c184177">Pallet Jacks & Trucks 托盘搬运车 [184177]</option>
+          <option value="c65522">Warehouse Forklifts & Stackers 仓库叉车和堆垛机 [65522]</option>
+          <option value="c131199">Belt Conveyors 带式输送机 [131199]</option>
+          <option value="c11774">Other Welding Equipment 焊接设备 [11774]</option>
+          <option value="c67224">Embroidery Machines 绣花机 [67224]</option>
+          <option value="c185251">Water Baths, Circulators & Chillers 水浴循环器 [185251]</option>
+          <option value="c185256">Other Medical & Lab Equipment 医疗和实验室设备 [185256]</option>
+          <option value="c257879">Homecare & Hospital Beds 医院病床 [257879]</option>
+          <option value="c41491">Other Air Compressors 其他空气压缩机 [41491]</option>
+          <option value="c124608">Rotary Screw Air Compressors 螺杆空气压缩机 [124608]</option>
+          <option value="c109488">Refrigerant Recovery Units 制冷剂回收装置 [109488]</option>
+          <option value="c61788">Agricultural Equipment 农业设备 [61788]</option>
+          <option value="c55805">Modular & Prefabricated Buildings 模块化和预制建筑 [55805]</option>
+          </optgroup>
+          <optgroup label="运动/生活 Lifestyle">
+          <option value="c15280">Treadmills 跑步机 [15280]</option>
+          <option value="c74469">Electric Bicycles 电动自行车 [74469]</option>
+          <option value="c47349">Electric Scooters 电动滑板车 [47349]</option>
+          <option value="c58102">Exercise Bikes 健身车 [58102]</option>
+          <option value="c158923">Home Gyms 家庭健身房 [158923]</option>
+          <option value="c177831">Bicycles 自行车 [177831]</option>
+          <option value="c179010">Tents 帐篷 [179010]</option>
+          <option value="c21213">Billiard/Snooker Tables 桌球台 [21213]</option>
+          <option value="c16080">Luggage 行李 [16080]</option>
+          <option value="c22679">Bicycle Frames 自行车车架 [22679]</option>
+          <option value="c33034">Electric Guitars 电吉他 [33034]</option>
+          </optgroup>
+          <optgroup label="电子/时尚 Electronics & Fashion">
+          <option value="c75068">Mobility Scooters 代步车 [75068]</option>
+          <option value="c36448">Electric Massage Chairs 电动按摩椅 [36448]</option>
+          <option value="c1245">Printers 打印机 [1245]</option>
+          <option value="c11071">TVs 电视 [11071]</option>
+          </optgroup>
+        </select>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>商品标题 Listing Title</label>
+        <input type="text" id="title" placeholder="粘贴完整标题，如: Solid Wood King Bed Frame with Headboard..." />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>刊登价格 Price (USD)</label>
+        <input type="number" id="price" placeholder="如: 350" min="0" />
+      </div>
+      <div class="form-group">
+        <label>申报重量 Claimed Weight (lbs)</label>
+        <input type="number" id="weight" placeholder="如: 120" min="0" />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>最长边 Longest Side (inches)</label>
+        <input type="number" id="dim1" placeholder="如: 72" min="0" />
+      </div>
+      <div class="form-group">
+        <label>次长边 Second Side (inches)</label>
+        <input type="number" id="dim2" placeholder="如: 60" min="0" />
+      </div>
+      <div class="form-group">
+        <label>最短边 Shortest Side (inches)</label>
+        <input type="number" id="dim3" placeholder="如: 18" min="0" />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label>主要材质 Primary Material <span style="font-weight:normal;color:#aaa">（可选，用于密度交叉验证）</span></label>
+        <select id="material">
+          <option value="">— 不选择（跳过材质验证）—</option>
+          <optgroup label="金属 Metal">
+            <option value="cast_iron">铸铁 / 实心钢 Cast Iron / Solid Steel</option>
+            <option value="steel_frame">钢架 / 钣金 Steel Frame / Sheet Metal</option>
+            <option value="aluminum">铝合金 Aluminum Alloy</option>
+            <option value="copper">铜 Copper / Bronze</option>
+          </optgroup>
+          <optgroup label="木材 Wood">
+            <option value="solid_hardwood">实木（硬木）Solid Hardwood (Oak/Walnut)</option>
+            <option value="solid_softwood">实木（软木）Solid Softwood (Pine/Fir)</option>
+            <option value="wood_frame">木框架 / 合板 Wood Frame / Plywood</option>
+          </optgroup>
+          <optgroup label="石材 Stone">
+            <option value="marble">大理石 / 花岗岩 Marble / Granite</option>
+            <option value="concrete">混凝土 Concrete</option>
+          </optgroup>
+          <optgroup label="轻型材料 Light Materials">
+            <option value="plastic">塑料 / ABS / 树脂 Plastic / ABS</option>
+            <option value="glass">玻璃 Glass</option>
+            <option value="foam">泡沫 / 海绵 Foam / Sponge</option>
+            <option value="fabric">布料 / 纺织品 Fabric / Textile</option>
+          </optgroup>
+        </select>
+      </div>
+    </div>
+
+    <div class="card" style="background:#f9f9f9; margin-bottom:0; box-shadow:none; border:1px solid #eee;">
+      <h2 style="color:#555;">卖家行为信号（人工判断，可选）</h2>
+      <div class="checkbox-group">
+        <label><input type="checkbox" id="beh1"> <span><strong>+40</strong> &nbsp;活动开始前30天内，该卖家大量新建刊登（包括复制已有刊登、批量上传等行为）</span></label>
+        <label><input type="checkbox" id="beh2"> <span><strong>+30</strong> &nbsp;该卖家多条刊登的申报重量刚好落在奖励档位门槛上方（如50出头、70出头、150出头磅，疑似刻意卡档）</span></label>
+        <label><input type="checkbox" id="beh3"> <span><strong>+20</strong> &nbsp;该卖家多条不同刊登填写了相同的非常规重量数值（如多个商品都填了"73磅"或"158磅"）</span></label>
+        <label><input type="checkbox" id="beh4"> <span><strong>+30</strong> &nbsp;近期对大量刊登的Item Specifics进行了批量修改（含重量、尺寸、品类等字段的集中改动）</span></label>
+        <label><input type="checkbox" id="beh5"> <span><strong>+20</strong> &nbsp;该账号注册时间较短（6个月以内），或账号历史GMV与当前申报体量明显不符</span></label>
+      </div>
+    </div>
+
+    <button class="btn" onclick="analyze()">开始风险分析 →</button>
+  </div>
+
+  <!-- RESULT -->
+  <div id="result">
+    <div class="result-header" id="result-header">
+      <div class="score-big" id="score-display">--</div>
+      <div>
+        <div class="result-label" id="result-label">--</div>
+        <div class="result-action" id="result-action">--</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>奖励层级 & 门槛堆积检测</h2>
+      <div class="tier-box" id="tier-box"></div>
+      <div id="cliff-alert"></div>
+    </div>
+
+    <div class="card">
+      <h2>尺寸门槛检测（前置条件）</h2>
+      <div class="size-check" id="size-result">--</div>
+      <div id="density-result" style="margin-top:10px;font-size:13px;color:#555;"></div>
+    </div>
+
+    <div class="card">
+      <h2>各模块评分明细</h2>
+      <div class="module-scores" id="module-scores"></div>
+    </div>
+
+    <button class="btn" style="background:#555;" onclick="reset()">← 重新输入</button>
+  </div>
+
+</div>
+
+<script>
+
+// ─── MODULE 1: CATEGORY DATA ───────────────────────────────────────────────
+// risk: 'green' | 'yellow' | 'red'
+// p50: typical median weight (lbs), p95: 95th percentile weight (lbs)
+// pricePerLbMin/Max: reasonable $/lb range for this category
+// industry: 'auto' | 'home' | 'sport' | 'industrial'
+// c[leafId] → old named key 映射（用于select值变更后的数据兼容）
+const CAT_ID_MAP = {
+  c36475:'body_kits', c33640:'bumpers',  c33644:'fenders',    c33646:'hood_panels',
+  c179850:'doors',    c33580:'control_arms', c33564:'brake_rotors', c262241:'clutch_kits',
+  c33615:'engines',   c171115:'transmissions', c38208:'sofas',   c175758:'beds',
+  c20713:'refrigerators', c71256:'washing_machines', c33082:'generators',
+  c67171:'ice_machines',  c97185:'forklifts', c15280:'treadmills',
+  c74469:'ebikes',    c47349:'escooters',
+};
+
+const CATEGORIES = {
+  body_kits:       { name:'Body Kits',              risk:'green',  p50:45,  p95:120, pricePerLbMin:4,  pricePerLbMax:30, industry:'auto' },
+  bumpers:         { name:'Bumpers & Reinforcements',risk:'green',  p50:35,  p95:90,  pricePerLbMin:3,  pricePerLbMax:25, industry:'auto' },
+  fenders:         { name:'Fenders',                risk:'yellow', p50:18,  p95:55,  pricePerLbMin:3,  pricePerLbMax:20, industry:'auto' },
+  hood_panels:     { name:'Hood Panels',            risk:'yellow', p50:22,  p95:60,  pricePerLbMin:3,  pricePerLbMax:20, industry:'auto' },
+  doors:           { name:'Doors & Door Skins',     risk:'green',  p50:50,  p95:110, pricePerLbMin:3,  pricePerLbMax:20, industry:'auto' },
+  control_arms:    { name:'Control Arms & Ball Joints', risk:'yellow', p50:15, p95:55, pricePerLbMin:4, pricePerLbMax:25, industry:'auto' },
+  brake_rotors:    { name:'Brake Rotors/Drums',     risk:'yellow', p50:20,  p95:65,  pricePerLbMin:3,  pricePerLbMax:20, industry:'auto' },
+  clutch_kits:     { name:'Clutch Kits',            risk:'red',    p50:12,  p95:30,  pricePerLbMin:5,  pricePerLbMax:30, industry:'auto' },
+  engines:         { name:'Engines',                risk:'green',  p50:400, p95:700, pricePerLbMin:1,  pricePerLbMax:8,  industry:'auto' },
+  transmissions:   { name:'Transmissions',          risk:'green',  p50:180, p95:320, pricePerLbMin:1,  pricePerLbMax:6,  industry:'auto' },
+  sofas:           { name:'Sofas & Sectionals',     risk:'green',  p50:130, p95:280, pricePerLbMin:2,  pricePerLbMax:10, industry:'home' },
+  beds:            { name:'Beds & Bed Frames',      risk:'green',  p50:100, p95:250, pricePerLbMin:1,  pricePerLbMax:8,  industry:'home' },
+  refrigerators:   { name:'Refrigerators',          risk:'green',  p50:180, p95:350, pricePerLbMin:1,  pricePerLbMax:6,  industry:'home' },
+  washing_machines:{ name:'Washing Machines',       risk:'green',  p50:160, p95:280, pricePerLbMin:1,  pricePerLbMax:5,  industry:'home' },
+  treadmills:      { name:'Treadmills',             risk:'green',  p50:180, p95:300, pricePerLbMin:1,  pricePerLbMax:6,  industry:'sport' },
+  ebikes:          { name:'Electric Bicycles',      risk:'yellow', p50:55,  p95:100, pricePerLbMin:8,  pricePerLbMax:30, industry:'sport' },
+  escooters:       { name:'Electric Scooters',      risk:'yellow', p50:40,  p95:85,  pricePerLbMin:6,  pricePerLbMax:25, industry:'sport' },
+  generators:      { name:'Generators',             risk:'yellow', p50:120, p95:380, pricePerLbMin:2,  pricePerLbMax:12, industry:'industrial' },
+  ice_machines:    { name:'Ice Machines',           risk:'yellow', p50:200, p95:480, pricePerLbMin:1,  pricePerLbMax:6,  industry:'industrial' },
+  forklifts:       { name:'Forklifts & Lift Trucks',risk:'green',  p50:3000,p95:8000,pricePerLbMin:0.5,pricePerLbMax:5,  industry:'industrial' },
+  // --- Batch 2: Auto parts continued ---
+  c33655: { name:'Truck Bed Accessories',          cnName:'皮卡后盖盖板',      risk:'yellow', p50:25,  p95:70,  pricePerLbMin:4,  pricePerLbMax:25, industry:'auto' },
+  c33638: { name:'Spoilers & Wings',               cnName:'扰流板和尾翼',      risk:'yellow', p50:15,  p95:45,  pricePerLbMin:3,  pricePerLbMax:20, industry:'auto' },
+  c33650: { name:'Running Boards & Step Bars',     cnName:'踏板和踏杆',        risk:'yellow', p50:20,  p95:60,  pricePerLbMin:3,  pricePerLbMax:20, industry:'auto' },
+  c33651: { name:'Roof Racks & Cross Bars',        cnName:'车顶架和横杆',      risk:'yellow', p50:18,  p95:55,  pricePerLbMin:4,  pricePerLbMax:25, industry:'auto' },
+  c33656: { name:'Hatches & Trunk Lids',           cnName:'舱口盖和行李箱盖',  risk:'yellow', p50:25,  p95:70,  pricePerLbMin:3,  pricePerLbMax:18, industry:'auto' },
+  c262166:{ name:'Body Side & Quarter Panels',     cnName:'车身侧板叶子板',    risk:'yellow', p50:20,  p95:60,  pricePerLbMin:3,  pricePerLbMax:18, industry:'auto' },
+  c262146:{ name:'Bumper Inserts & Covers',        cnName:'保险杠插件和盖板',  risk:'red',    p50:5,   p95:18,  pricePerLbMin:5,  pricePerLbMax:30, industry:'auto' },
+  c38658: { name:'Air Dams',                       cnName:'气坝',              risk:'yellow', p50:12,  p95:35,  pricePerLbMin:3,  pricePerLbMax:20, industry:'auto' },
+  c33589: { name:'Gearboxes, Rack & Pinions',      cnName:'齿轮箱转向机',      risk:'yellow', p50:20,  p95:55,  pricePerLbMin:3,  pricePerLbMax:15, industry:'auto' },
+  c42609: { name:'Other Steering & Suspension',    cnName:'转向和悬架零件',    risk:'red',    p50:5,   p95:20,  pricePerLbMin:3,  pricePerLbMax:20, industry:'auto' },
+  c33585: { name:'Lift Kits & Parts',              cnName:'升降机套件和零件',  risk:'yellow', p50:35,  p95:100, pricePerLbMin:3,  pricePerLbMax:20, industry:'auto' },
+  c262152:{ name:'Frame Rails & Subframes',        cnName:'车架纵梁和副车架',  risk:'green',  p50:80,  p95:200, pricePerLbMin:2,  pricePerLbMax:10, industry:'auto' },
+  c33602: { name:'Radiators',                      cnName:'散热器',            risk:'yellow', p50:20,  p95:55,  pricePerLbMin:3,  pricePerLbMax:20, industry:'auto' },
+  c262251:{ name:'Driveshafts',                    cnName:'传动轴',            risk:'yellow', p50:25,  p95:70,  pricePerLbMin:3,  pricePerLbMax:15, industry:'auto' },
+  c262245:{ name:'Differential Assemblies',        cnName:'差速器总成',        risk:'green',  p50:80,  p95:200, pricePerLbMin:2,  pricePerLbMax:8,  industry:'auto' },
+  c33728: { name:'Axle Housings & Parts',          cnName:'车桥壳及零件',      risk:'green',  p50:60,  p95:180, pricePerLbMin:2,  pricePerLbMax:8,  industry:'auto' },
+  c262249:{ name:'Additional Differential Parts',  cnName:'附加差速器零件',    risk:'yellow', p50:20,  p95:60,  pricePerLbMin:2,  pricePerLbMax:10, industry:'auto' },
+  c173511:{ name:'Brake Component Kits',           cnName:'制动盘片套装',      risk:'yellow', p50:25,  p95:70,  pricePerLbMin:3,  pricePerLbMax:18, industry:'auto' },
+  c63699: { name:'Tire Changers/Wheel Balancers',  cnName:'轮胎拆装机/车轮平衡机', risk:'green', p50:200, p95:450, pricePerLbMin:1, pricePerLbMax:5, industry:'auto' },
+  c63700: { name:'Other Shop Equipment',           cnName:'汽修车间设备',      risk:'yellow', p50:50,  p95:200, pricePerLbMin:2,  pricePerLbMax:15, industry:'auto' },
+  c179507:{ name:'Engine Hoists & Stands',         cnName:'发动机吊机和支架',  risk:'green',  p50:150, p95:350, pricePerLbMin:1,  pricePerLbMax:5,  industry:'auto' },
+  c179661:{ name:'Service Ramps',                  cnName:'服务坡道',          risk:'yellow', p50:30,  p95:80,  pricePerLbMin:2,  pricePerLbMax:10, industry:'auto' },
+  c178918:{ name:'ATV Windshields & Windows',      cnName:'ATV挡风玻璃',       risk:'red',    p50:5,   p95:20,  pricePerLbMin:5,  pricePerLbMax:25, industry:'auto' },
+  c43973: { name:'ATV Fenders',                    cnName:'ATV轮眉',           risk:'yellow', p50:5,   p95:20,  pricePerLbMin:3,  pricePerLbMax:15, industry:'auto' },
+  c178917:{ name:'ATV Cabs, Doors & Parts',        cnName:'ATV驾驶室车门及零件',risk:'yellow', p50:30,  p95:90,  pricePerLbMin:3,  pricePerLbMax:15, industry:'auto' },
+  c33701: { name:'Seats',                          cnName:'汽车座椅',          risk:'yellow', p50:30,  p95:80,  pricePerLbMin:3,  pricePerLbMax:15, industry:'auto' },
+  c262191:{ name:'Dash Panels',                    cnName:'仪表板',            risk:'red',    p50:8,   p95:25,  pricePerLbMin:3,  pricePerLbMax:15, industry:'auto' },
+  c147699:{ name:'Motorcycle Wheels & Rims',       cnName:'摩托车轮毂',        risk:'yellow', p50:20,  p95:55,  pricePerLbMin:4,  pricePerLbMax:20, industry:'auto' },
+  c33556: { name:'Fuel Tanks & Filler Necks',      cnName:'油箱和加油口',      risk:'yellow', p50:18,  p95:50,  pricePerLbMin:3,  pricePerLbMax:15, industry:'auto' },
+  c262256:{ name:'Transfer Cases',                 cnName:'分动箱',            risk:'green',  p50:80,  p95:200, pricePerLbMin:2,  pricePerLbMax:8,  industry:'auto' },
+  c184695:{ name:'Commercial Truck Air Compressors',cnName:'商用卡车空气压缩机',risk:'green',  p50:120, p95:350, pricePerLbMin:1,  pricePerLbMax:5,  industry:'auto' },
+  c171108:{ name:'Complete Motorcycle Engines',    cnName:'摩托车发动机总成',  risk:'green',  p50:80,  p95:200, pricePerLbMin:2,  pricePerLbMax:8,  industry:'auto' },
+  c179445:{ name:'Truck Tool Boxes',               cnName:'卡车工具箱',        risk:'yellow', p50:35,  p95:100, pricePerLbMin:2,  pricePerLbMax:8,  industry:'auto' },
+  c179515:{ name:'Wheel Alignment Systems/Tools',  cnName:'车轮定位系统工具',  risk:'green',  p50:80,  p95:200, pricePerLbMin:2,  pricePerLbMax:8,  industry:'auto' },
+  c63698: { name:'Paint Booths',                   cnName:'喷漆房',            risk:'green',  p50:300, p95:800, pricePerLbMin:1,  pricePerLbMax:4,  industry:'auto' },
+  c35562: { name:'Motorcycle Frames & Parts',      cnName:'摩托车车架及零件',  risk:'yellow', p50:25,  p95:70,  pricePerLbMin:3,  pricePerLbMax:15, industry:'auto' },
+  c262099:{ name:'EV Charging Stations',           cnName:'电动汽车充电桩',    risk:'yellow', p50:30,  p95:80,  pricePerLbMin:4,  pricePerLbMax:20, industry:'auto' },
+  c171106:{ name:'Complete Trolling Motors',       cnName:'拖钓船马达',        risk:'green',  p50:60,  p95:180, pricePerLbMin:3,  pricePerLbMax:12, industry:'auto' },
+  c41981: { name:'Solar Panels & Kits',            cnName:'太阳能电池板和套件',risk:'yellow', p50:30,  p95:100, pricePerLbMin:5,  pricePerLbMax:25, industry:'home' },
+  c259285:{ name:'Solar Cells & Kits',             cnName:'太阳能电池和套件',  risk:'yellow', p50:25,  p95:80,  pricePerLbMin:4,  pricePerLbMax:20, industry:'home' },
+  c131588:{ name:'Mattresses',                     cnName:'床垫',              risk:'green',  p50:80,  p95:180, pricePerLbMin:2,  pricePerLbMax:8,  industry:'home' },
+  c54235: { name:'Chairs',                         cnName:'椅子',              risk:'yellow', p50:35,  p95:100, pricePerLbMin:2,  pricePerLbMax:12, industry:'home' },
+  c88057: { name:'Home Office Desks',              cnName:'家庭办公桌',        risk:'yellow', p50:50,  p95:140, pricePerLbMin:2,  pricePerLbMax:10, industry:'home' },
+  c20487: { name:'Cabinets & Cupboards',           cnName:'橱柜和橱柜',        risk:'green',  p50:80,  p95:220, pricePerLbMin:1,  pricePerLbMax:8,  industry:'home' },
+  c38204: { name:'Tables',                         cnName:'桌子',              risk:'yellow', p50:60,  p95:180, pricePerLbMin:1,  pricePerLbMax:8,  industry:'home' },
+  c20488: { name:'TV Stands & Entertainment Units',cnName:'电视柜和娱乐设备',  risk:'yellow', p50:40,  p95:120, pricePerLbMin:1,  pricePerLbMax:8,  industry:'home' },
+  c114397:{ name:'Dressers & Chests of Drawers',   cnName:'梳妆台和抽屉柜',   risk:'yellow', p50:60,  p95:160, pricePerLbMin:1,  pricePerLbMax:8,  industry:'home' },
+  c139956:{ name:'Sheds, Summerhouses & Carports', cnName:'棚屋凉亭和车棚',   risk:'green',  p50:200, p95:600, pricePerLbMin:1,  pricePerLbMax:5,  industry:'home' },
+  c180992:{ name:'Awnings & Canopies',             cnName:'遮阳篷和檐篷',      risk:'yellow', p50:40,  p95:120, pricePerLbMin:2,  pricePerLbMax:8,  industry:'home' },
+  c180995:{ name:'Gazebos & Pergolas',             cnName:'凉亭和凉棚',        risk:'green',  p50:150, p95:400, pricePerLbMin:1,  pricePerLbMax:5,  industry:'home' },
+  c151621:{ name:'Barbecues, Grills & Smokers',    cnName:'烧烤炉烤架和烟熏炉',risk:'yellow', p50:50,  p95:200, pricePerLbMin:2,  pricePerLbMax:8,  industry:'home' },
+  c42239: { name:'Pool Heaters & Solar Panels',    cnName:'泳池加热器和太阳能',risk:'yellow', p50:40,  p95:120, pricePerLbMin:3,  pricePerLbMax:12, industry:'home' },
+  c181054:{ name:'Saunas',                         cnName:'桑拿',              risk:'green',  p50:200, p95:500, pricePerLbMin:1,  pricePerLbMax:4,  industry:'home' },
+  c185108:{ name:'Central Air Conditioners',       cnName:'中央空调',          risk:'green',  p50:80,  p95:250, pricePerLbMin:2,  pricePerLbMax:8,  industry:'home' },
+  c185111:{ name:'Window & Wall Air Conditioners', cnName:'窗式和壁挂式空调',  risk:'yellow', p50:60,  p95:150, pricePerLbMin:2,  pricePerLbMax:8,  industry:'home' },
+  c260921:{ name:'Lawn Mowers',                    cnName:'割草机',            risk:'yellow', p50:80,  p95:800, pricePerLbMin:1,  pricePerLbMax:8,  industry:'home' },
+  c71253: { name:'Range Hoods',                    cnName:'抽油烟机',          risk:'yellow', p50:30,  p95:80,  pricePerLbMin:3,  pricePerLbMax:12, industry:'home' },
+  c71318: { name:'Wall Ovens',                     cnName:'壁挂式烤箱',        risk:'green',  p50:100, p95:220, pricePerLbMin:2,  pricePerLbMax:8,  industry:'home' },
+  c71250: { name:'Ranges & Stoves',                cnName:'炉灶和炉灶',        risk:'green',  p50:150, p95:280, pricePerLbMin:1,  pricePerLbMax:6,  industry:'home' },
+  c177750:{ name:'Wine Fridges & Cellars',         cnName:'酒柜和酒窖',        risk:'yellow', p50:60,  p95:180, pricePerLbMin:2,  pricePerLbMax:8,  industry:'home' },
+  c147147:{ name:'Shower Doors',                   cnName:'淋浴门',            risk:'yellow', p50:35,  p95:100, pricePerLbMin:3,  pricePerLbMax:12, industry:'home' },
+  c42025: { name:'Bathtubs',                       cnName:'浴缸',              risk:'green',  p50:120, p95:280, pricePerLbMin:1,  pricePerLbMax:6,  industry:'home' },
+  c85892: { name:'Doors',                          cnName:'门',                risk:'green',  p50:80,  p95:200, pricePerLbMin:2,  pricePerLbMax:8,  industry:'home' },
+  c97122: { name:'Excavators',                     cnName:'挖掘机',            risk:'green',  p50:8000,p95:25000,pricePerLbMin:0.3,pricePerLbMax:3, industry:'industrial' },
+  c97126: { name:'Other Heavy Equipment Parts',    cnName:'其他重型设备零件',  risk:'yellow', p50:80,  p95:500, pricePerLbMin:1,  pricePerLbMax:10, industry:'industrial' },
+  c95494: { name:'Skid Steer Loaders',             cnName:'滑移装载机',        risk:'green',  p50:4000,p95:10000,pricePerLbMin:0.3,pricePerLbMax:2, industry:'industrial' },
+  c11752: { name:'Other Heavy Equipment Attachments',cnName:'重型设备附件',    risk:'yellow', p50:200, p95:1200,pricePerLbMin:0.5,pricePerLbMax:5, industry:'industrial' },
+  c50908: { name:'Buckets',                        cnName:'水桶',              risk:'yellow', p50:80,  p95:300, pricePerLbMin:1,  pricePerLbMax:6,  industry:'industrial' },
+  c259089:{ name:'Engine Cooling Systems',         cnName:'发动机冷却系统',    risk:'yellow', p50:30,  p95:100, pricePerLbMin:3,  pricePerLbMax:15, industry:'industrial' },
+  c259088:{ name:'Complete Engines & Engine Parts',cnName:'完整的发动机和零件',risk:'green',  p50:500, p95:2000,pricePerLbMin:0.5,pricePerLbMax:4, industry:'industrial' },
+  c41488: { name:'Forks & Fork Extensions',        cnName:'货叉和货叉加长件',  risk:'green',  p50:80,  p95:250, pricePerLbMin:1,  pricePerLbMax:5,  industry:'industrial' },
+  c63924: { name:'Wood Chippers, Stump Grinders',  cnName:'木材削片机树桩研磨机',risk:'green', p50:400, p95:1200,pricePerLbMin:0.5,pricePerLbMax:4, industry:'industrial' },
+  c41492: { name:'Compactors & Asphalt Rollers',   cnName:'压实机和沥青压路机',risk:'green',  p50:1000,p95:5000,pricePerLbMin:0.3,pricePerLbMax:3, industry:'industrial' },
+  c97123: { name:'Scissor & Boom Lifts',           cnName:'剪叉式和悬臂式高空作业平台',risk:'green',p50:3000,p95:10000,pricePerLbMin:0.3,pricePerLbMax:2,industry:'industrial'},
+  c259048:{ name:'Grapples',                       cnName:'抓斗',              risk:'green',  p50:500, p95:2000,pricePerLbMin:0.5,pricePerLbMax:3, industry:'industrial' },
+  c95495: { name:'Trailers',                       cnName:'拖车',              risk:'green',  p50:1500,p95:5000,pricePerLbMin:0.3,pricePerLbMax:2, industry:'industrial' },
+  c58161: { name:'Wheel Loaders',                  cnName:'轮式装载机',        risk:'green',  p50:8000,p95:30000,pricePerLbMin:0.2,pricePerLbMax:1.5,industry:'industrial'},
+  c78192: { name:'Variable Frequency Drives',      cnName:'变频驱动器',        risk:'yellow', p50:20,  p95:80,  pricePerLbMin:5,  pricePerLbMax:30, industry:'industrial' },
+  c46744: { name:'Engraving',                      cnName:'雕刻机',            risk:'yellow', p50:30,  p95:100, pricePerLbMin:5,  pricePerLbMax:30, industry:'industrial' },
+  c258662:{ name:'Reach-In Refrigerators & Freezers',cnName:'伸手式冰箱和冰柜',risk:'green', p50:200, p95:500, pricePerLbMin:1,  pricePerLbMax:5,  industry:'industrial' },
+  c67167: { name:'Soft Serve Ice Cream Machines',  cnName:'软冰淇淋机',        risk:'green',  p50:150, p95:350, pricePerLbMin:1,  pricePerLbMax:5,  industry:'industrial' },
+  c258661:{ name:'Merchandising Glass Door Fridges',cnName:'推销玻璃门冰箱冰柜',risk:'green', p50:200, p95:500, pricePerLbMin:1,  pricePerLbMax:5,  industry:'industrial' },
+  c258845:{ name:'Refrigerated Prep Tables',       cnName:'冷藏准备台',        risk:'green',  p50:150, p95:350, pricePerLbMin:1,  pricePerLbMax:5,  industry:'industrial' },
+  c258623:{ name:'Commercial Mixers',              cnName:'商用搅拌机',        risk:'yellow', p50:50,  p95:200, pricePerLbMin:2,  pricePerLbMax:10, industry:'industrial' },
+  c258634:{ name:'Commercial Hoods',               cnName:'商用抽油烟机',      risk:'yellow', p50:50,  p95:180, pricePerLbMin:2,  pricePerLbMax:8,  industry:'industrial' },
+  c11888: { name:'Snack & Food Machines',          cnName:'零食和食品机械',    risk:'yellow', p50:50,  p95:200, pricePerLbMin:2,  pricePerLbMax:10, industry:'industrial' },
+  c11808: { name:'Sealers & Sealing Machines',     cnName:'封口机和封口机',    risk:'yellow', p50:30,  p95:150, pricePerLbMin:2,  pricePerLbMax:10, industry:'industrial' },
+  c184247:{ name:'Packing Machines',               cnName:'包装机',            risk:'yellow', p50:80,  p95:300, pricePerLbMin:2,  pricePerLbMax:8,  industry:'industrial' },
+  c184177:{ name:'Pallet Jacks & Trucks',          cnName:'托盘搬运车和卡车',  risk:'green',  p50:100, p95:300, pricePerLbMin:1,  pricePerLbMax:5,  industry:'industrial' },
+  c65522: { name:'Warehouse Forklifts & Stackers', cnName:'仓库叉车和堆垛机',  risk:'green',  p50:500, p95:2000,pricePerLbMin:0.5,pricePerLbMax:3, industry:'industrial' },
+  c131199:{ name:'Belt Conveyors',                 cnName:'带式输送机',        risk:'green',  p50:200, p95:800, pricePerLbMin:1,  pricePerLbMax:4,  industry:'industrial' },
+  c11774: { name:'Other Welding Equipment',        cnName:'焊接设备',          risk:'yellow', p50:50,  p95:200, pricePerLbMin:2,  pricePerLbMax:8,  industry:'industrial' },
+  c67224: { name:'Embroidery Machines',            cnName:'绣花机',            risk:'yellow', p50:30,  p95:120, pricePerLbMin:3,  pricePerLbMax:12, industry:'industrial' },
+  c185251:{ name:'Water Baths, Circulators & Chillers',cnName:'水浴循环器和冷却器',risk:'yellow',p50:40, p95:150, pricePerLbMin:3, pricePerLbMax:12, industry:'industrial' },
+  c185256:{ name:'Other Medical & Lab Equipment',  cnName:'其他医疗和实验室设备',risk:'yellow',p50:30, p95:150, pricePerLbMin:3,  pricePerLbMax:15, industry:'industrial' },
+  c257879:{ name:'Homecare & Hospital Beds',       cnName:'家庭护理和医院病床',risk:'green',  p50:100, p95:250, pricePerLbMin:1,  pricePerLbMax:6,  industry:'industrial' },
+  c41491: { name:'Other Air Compressors',          cnName:'其他空气压缩机',    risk:'yellow', p50:50,  p95:200, pricePerLbMin:2,  pricePerLbMax:8,  industry:'industrial' },
+  c124608:{ name:'Rotary Screw Air Compressors',   cnName:'螺杆空气压缩机',    risk:'green',  p50:200, p95:600, pricePerLbMin:1,  pricePerLbMax:4,  industry:'industrial' },
+  c109488:{ name:'Refrigerant Recovery Units',     cnName:'制冷剂回收装置',    risk:'yellow', p50:30,  p95:100, pricePerLbMin:3,  pricePerLbMax:12, industry:'industrial' },
+  c61788: { name:'Agricultural Equipment',         cnName:'农业设备',          risk:'green',  p50:500, p95:3000,pricePerLbMin:0.5,pricePerLbMax:4, industry:'industrial' },
+  c55805: { name:'Modular & Prefabricated Buildings',cnName:'模块化和预制建筑',risk:'green',  p50:500, p95:3000,pricePerLbMin:0.5,pricePerLbMax:3, industry:'industrial' },
+  c33034: { name:'Electric Guitars',               cnName:'电吉他',            risk:'red',    p50:8,   p95:15,  pricePerLbMin:10, pricePerLbMax:50, industry:'sport' },
+  c58102: { name:'Exercise Bikes',                 cnName:'健身车',            risk:'yellow', p50:60,  p95:150, pricePerLbMin:2,  pricePerLbMax:8,  industry:'sport' },
+  c158923:{ name:'Home Gyms',                      cnName:'家庭健身房',        risk:'yellow', p50:150, p95:400, pricePerLbMin:1,  pricePerLbMax:5,  industry:'sport' },
+  c177831:{ name:'Bicycles',                       cnName:'自行车',            risk:'yellow', p50:25,  p95:45,  pricePerLbMin:5,  pricePerLbMax:25, industry:'sport' },
+  c179010:{ name:'Tents',                          cnName:'帐篷',              risk:'yellow', p50:15,  p95:50,  pricePerLbMin:4,  pricePerLbMax:20, industry:'sport' },
+  c16080: { name:'Luggage',                        cnName:'行李',              risk:'red',    p50:5,   p95:15,  pricePerLbMin:5,  pricePerLbMax:25, industry:'sport' },
+  c22679: { name:'Bicycle Frames',                 cnName:'自行车车架',        risk:'red',    p50:3,   p95:10,  pricePerLbMin:10, pricePerLbMax:50, industry:'sport' },
+  c21213: { name:'Billiard/Snooker Tables',        cnName:'桌球台',            risk:'green',  p50:300, p95:700, pricePerLbMin:1,  pricePerLbMax:4,  industry:'sport' },
+  c75068: { name:'Mobility Scooters',              cnName:'代步车',            risk:'yellow', p50:80,  p95:200, pricePerLbMin:2,  pricePerLbMax:8,  industry:'fashion' },
+  c36448: { name:'Electric Massage Chairs',        cnName:'电动按摩椅',        risk:'green',  p50:150, p95:350, pricePerLbMin:1,  pricePerLbMax:5,  industry:'fashion' },
+  c1245:  { name:'Printers',                       cnName:'打印机',            risk:'red',    p50:10,  p95:30,  pricePerLbMin:4,  pricePerLbMax:20, industry:'industrial' },
+  c11071: { name:'TVs',                            cnName:'电视',              risk:'red',    p50:50,  p95:100, pricePerLbMin:4,  pricePerLbMax:15, industry:'industrial' },
+};
+
+// ─── MODULE 2: TITLE KEYWORDS ──────────────────────────────────────────────
+// Module 2 词库 —— 宽泛匹配，不绑定特定拼写
+// 高重量正向词（减分）：重材质
+const TITLE_HEAVY_MATERIAL = [
+  'solid wood','hardwood','oak','walnut','pine wood',
+  'cast iron','wrought iron','steel frame','steel body','stainless steel','galvanized steel',
+  'forged','billet','carbon steel','alloy steel',
+  'marble','granite','concrete','stone top',
+  'heavy duty','heavy-duty','commercial grade','commercial-grade',
+  'industrial grade','industrial-grade','reinforced'
+];
+// 超大尺寸词（减分）
+const TITLE_BIG_SIZE = [
+  'king size','king-size','king bed','california king',
+  'queen size','queen-size','queen bed',
+  'full size','full-size','oversized','extra large','xl size',
+  '72 inch','72"','84 inch','84"','96 inch','96"','108 inch',
+  'sectional','l-shape','u-shape',
+  '10-person','12-person','8-person','20x20','16x20','10x20',
+  'fat tire','cargo',
+  'riding mower','zero turn','walk behind',
+  'full suspension','dual suspension'
+];
+// 危险词（加分）：暗示小件/零件/附件
+const TITLE_DANGER = [
+  'replacement part','replace part','oem replacement',
+  'bracket','mount bracket','mounting bracket',
+  'clip','retainer clip','spring clip',
+  'cover only','cover plate','trim cover',
+  'gasket','o-ring','seal kit','seal only',
+  'spacer','shim','bushing',
+  'adapter','converter','coupler',
+  'connector','fitting','junction',
+  'handle only','knob only','switch only',
+  'bolt kit','nut kit','hardware kit',
+  'repair kit','rebuild kit','service kit',
+  'travel size','handheld','pocket'
+];
+// 门槛边界重量：奖励档位下限 10/50/70/150 磅
+const TIER_BOUNDARIES = [10, 50, 70, 150];
+
+function scoreTitleModule(title) {
+  if (!title || title.trim().length === 0) {
+    return { score: 0, reasons: '未填写标题，跳过（不影响评分）' };
+  }
+  const t = title.toLowerCase();
+  let score = 0; // 中性基准，无信号=0分
+  let reasons = [];
+
+  // ① 危险词（加分，最高+50）
+  const foundDanger = TITLE_DANGER.filter(w => t.includes(w));
+  if (foundDanger.length > 0) {
+    const add = Math.min(foundDanger.length * 18, 50);
+    score += add;
+    reasons.push('⚠ 含小件/零件词: ' + foundDanger.slice(0,3).join(', '));
+  }
+
+  // ② 大尺寸词（减分，最高-35）
+  const foundSize = TITLE_BIG_SIZE.filter(w => t.includes(w));
+  if (foundSize.length > 0) {
+    const sub = Math.min(foundSize.length * 12, 35);
+    score -= sub;
+    reasons.push('✓ 含大尺寸词: ' + foundSize.slice(0,2).join(', '));
+  }
+
+  // ③ 重材质词（减分，最高-25）
+  const foundMat = TITLE_HEAVY_MATERIAL.filter(w => t.includes(w));
+  if (foundMat.length > 0) {
+    const sub = Math.min(foundMat.length * 10, 25);
+    score -= sub;
+    reasons.push('✓ 含重材质词: ' + foundMat.slice(0,2).join(', '));
+  }
+
+  // ④ 门槛边界重量数字检测（加分+25）
+  // 匹配标题中出现的重量数值，如 "70 lbs" "150lb" "70 pounds" "70-pound"
+  const weightMatches = [...t.matchAll(/\b(\d+\.?\d*)\s*(?:lbs?|pounds?|lb\.?)\b/g)];
+  let cliffWord = null;
+  for (const m of weightMatches) {
+    const num = parseFloat(m[1]);
+    for (const boundary of TIER_BOUNDARIES) {
+      if (num >= boundary && num <= boundary + 5) {
+        cliffWord = m[0].trim();
+        break;
+      }
+    }
+    if (cliffWord) break;
+  }
+  if (cliffWord) {
+    score += 25;
+    reasons.push('⚠ 标题含门槛边界重量 "' + cliffWord + '"（疑似卡档）');
+  }
+
+  score = Math.max(0, Math.min(100, score));
+  return { score, reasons: reasons.join(' | ') || '标题中性，无明显信号' };
+}
+
+// ─── MODULE 3: PRICE INTELLIGENCE ─────────────────────────────────────────
+function scorePriceModule(price, weight, catData) {
+  if (!price || !weight || weight === 0) return { score: 50, reasons: '价格或重量未填写' };
+
+  const ppl = price / weight;
+  const { pricePerLbMin, pricePerLbMax } = catData;
+  let score = 0;
+  let reasons = '';
+
+  if (ppl < pricePerLbMin * 0.4) {
+    score = 90;
+    reasons = `极度价格倒挂：$${ppl.toFixed(1)}/磅，远低于该品类正常区间 $${pricePerLbMin}-$${pricePerLbMax}/磅`;
+  } else if (ppl < pricePerLbMin * 0.7) {
+    score = 70;
+    reasons = `价格偏低：$${ppl.toFixed(1)}/磅，低于该品类正常区间 $${pricePerLbMin}-$${pricePerLbMax}/磅`;
+  } else if (ppl <= pricePerLbMax * 1.5) {
+    score = 15;
+    reasons = `价格合理：$${ppl.toFixed(1)}/磅，在该品类正常区间内`;
+  } else {
+    score = 20;
+    reasons = `价格偏高但不异常：$${ppl.toFixed(1)}/磅（高价产品）`;
+  }
+
+  // 动态检测：价格是否恰好在当前层级的最大补贴点附近
+  // 各档最大补贴触发价：20%→$600, 40%→$300, 60%→$200, 80%→$150
+  const { tier: currentTier } = getTier(weight);
+  if (currentTier && price > 0) {
+    const maxRewardPrice = 120 / currentTier.pctNum;
+    const deviation = Math.abs(price - maxRewardPrice) / maxRewardPrice;
+    if (deviation < 0.12) {
+      score = Math.min(score + 25, 100);
+      reasons += ` | ⚠ 价格$${price}恰好在${currentTier.pct}档最大补贴点($${maxRewardPrice.toFixed(0)})附近（Gaming信号）`;
+    }
+  }
+
+  return { score, reasons };
+}
+
+// ─── MODULE 1: CATEGORY BASELINE ──────────────────────────────────────────
+function scoreCategoryModule(weight, catData) {
+  if (!weight) return { score: 50, reasons: '未填写重量' };
+
+  const { p95, risk } = catData;
+  const riskLabel = { green:'🟢 绿色品类（天然符合）', yellow:'🟡 黄色品类（需信号验证）', red:'🔴 红色品类（高欺诈风险）' };
+  let score = 0;
+  let reasons = '';
+
+  const overRate = (weight - p95) / p95;
+  const baseScore = risk === 'green' ? 0 : risk === 'yellow' ? 15 : 25;
+
+  if (weight <= p95) {
+    score = baseScore;
+    const baseLabel = baseScore > 0 ? `（含品类基础风险${baseScore}分）` : '';
+    reasons = `申报重量 ${weight}磅 在品类正常范围内（P95=${p95}磅）${baseLabel}`;
+  } else if (overRate < 0.50) {
+    score = Math.min(100, baseScore + 30);
+    reasons = `申报重量 ${weight}磅 超出P95（${p95}磅）${(overRate*100).toFixed(0)}%，偏高`;
+  } else {
+    score = Math.min(100, baseScore + 60);
+    reasons = `申报重量 ${weight}磅 超出P95（${p95}磅）${(overRate*100).toFixed(0)}%，严重异常`;
+  }
+
+  if (risk === 'red' && weight <= p95) {
+    reasons += ' | 🔴 红色品类：天然不应达到大重货门槛';
+  }
+
+  reasons = riskLabel[risk] + ' | ' + reasons;
+  return { score, reasons };
+}
+
+// ─── MODULE 4: WEIGHT DISTRIBUTION ────────────────────────────────────────
+function scoreWeightModule(weight, catData) {
+  if (!weight || !catData) return { score: 50, reasons: '未填写重量或品类' };
+
+  const { p50 } = catData;
+  const deviation = (weight - p50) / p50;
+  let score, reasons;
+
+  if (deviation < 0.20) {
+    score = 0;
+    reasons = `申报重量 ${weight}磅 接近品类中位数 ${p50}磅（偏差 ${(deviation*100).toFixed(0)}%），正常`;
+  } else if (deviation < 0.50) {
+    score = 40;
+    reasons = `申报重量 ${weight}磅 偏离品类中位数 ${p50}磅 ${(deviation*100).toFixed(0)}%，偏高`;
+  } else if (deviation < 1.00) {
+    score = 70;
+    reasons = `申报重量 ${weight}磅 偏离品类中位数 ${p50}磅 ${(deviation*100).toFixed(0)}%，显著异常`;
+  } else {
+    score = 90;
+    reasons = `申报重量 ${weight}磅 是品类中位数 ${p50}磅 的 ${(deviation+1).toFixed(1)} 倍，极度异常`;
+  }
+
+  return { score, reasons };
+}
+
+// ─── MODULE 5: SELLER BEHAVIOR ─────────────────────────────────────────────
+function scoreSellerModule() {
+  const checks = ['beh1','beh2','beh3','beh4','beh5'];
+  const labels = [
+    '活动前30天内大量新建刊登',
+    '多条刊登重量卡在档位门槛上方',
+    '多条刊登填写相同非常规重量',
+    '近期批量修改Item Specifics',
+    '账号注册不足6个月或GMV异常'
+  ];
+  const weights = [40, 30, 20, 30, 20];
+  let score = 0;
+  let triggered = [];
+
+  checks.forEach((id, i) => {
+    if (document.getElementById(id).checked) {
+      score += weights[i];
+      triggered.push(labels[i]);
+    }
+  });
+
+  const reasons = triggered.length > 0
+    ? '⚠ 行为异常：' + triggered.join(' + ')
+    : '无异常行为标记';
+
+  return { score, reasons };
+}
+
+// ─── DIMENSION CHECK ───────────────────────────────────────────────────────
+function checkDimensions(d1, d2, d3) {
+  if (!d1 && !d2 && !d3) return { pass: null, msg: '未填写尺寸，跳过门槛检测（不影响评分）' };
+
+  const dims = [d1, d2, d3].map(Number).sort((a,b) => b - a);
+  const [longest, second, shortest] = dims;
+  const girth = 2 * (second + shortest);
+
+  const rule1 = longest > 59;
+  const rule2 = second > 33;
+  const rule3 = shortest > 33;
+  const rule4 = longest + girth > 130;
+
+  const pass = rule1 || rule2 || rule3 || rule4;
+
+  let details = [];
+  if (rule1) details.push(`最长边 ${longest}" > 59" ✓`);
+  if (rule2) details.push(`次长边 ${second}" > 33" ✓`);
+  if (rule3) details.push(`最短边 ${shortest}" > 33" ✓`);
+  if (rule4) details.push(`长度+围长 ${longest + girth}" > 130" ✓`);
+  if (!pass) details.push(`最长边${longest}" 次长边${second}" 最短边${shortest}" — 均未达门槛`);
+
+  return { pass, msg: details.join(' | ') };
+}
+
+// ─── DENSITY CHECK ─────────────────────────────────────────────────────────
+// 密度 = 重量(磅) / 体积(立方英尺)  1 ft³ = 1728 in³
+const DENSITY_THRESHOLD = {
+  auto:       200,
+  industrial: 150,
+  home:        80,
+  sport:       60,
+  fashion:     50,
+};
+
+// 材质密度参考范围 (lbs/ft³)
+// min: 该材质产品的合理密度下限（考虑空腔/结构）
+// max: 物理上绝对不可能超过的上限（实心原材料密度）
+const MATERIAL_DENSITY = {
+  cast_iron:      { label:'铸铁/实心钢', min:30,  max:490, ref:490 },
+  steel_frame:    { label:'钢架/钣金',   min:3,   max:120, ref:490 },
+  aluminum:       { label:'铝合金',      min:3,   max:100, ref:168 },
+  copper:         { label:'铜',          min:10,  max:300, ref:556 },
+  solid_hardwood: { label:'实木(硬木)',  min:15,  max:60,  ref:50  },
+  solid_softwood: { label:'实木(软木)',  min:10,  max:40,  ref:31  },
+  wood_frame:     { label:'木框架/合板', min:1,   max:30,  ref:31  },
+  marble:         { label:'大理石/花岗岩',min:20, max:180, ref:170 },
+  concrete:       { label:'混凝土',      min:10,  max:150, ref:150 },
+  plastic:        { label:'塑料/ABS',    min:0.5, max:12,  ref:7   },
+  glass:          { label:'玻璃',        min:5,   max:165, ref:160 },
+  foam:           { label:'泡沫/海绵',   min:0.2, max:5,   ref:2   },
+  fabric:         { label:'布料/纺织品', min:0.3, max:10,  ref:5   },
+};
+
+function checkDensity(weight, d1, d2, d3, industry, materialKey) {
+  if (!d1 || !d2 || !d3 || !weight) return { score: 0, msg: null, lines: [] };
+
+  const volFt3 = (d1 * d2 * d3) / 1728;
+  const density = weight / volFt3;
+  const lines = [];
+  let score = 0;
+
+  // ① 品类上限检测
+  const limit = DENSITY_THRESHOLD[industry] || 100;
+  let catLevel = '正常', catColor = '#34a853';
+  if (density > limit * 2) {
+    score += 40; catLevel = '极度异常'; catColor = '#c62828';
+  } else if (density > limit) {
+    score += 20; catLevel = '偏高'; catColor = '#fbbc04';
+  }
+  lines.push({
+    color: catColor,
+    text: `⬡ 品类密度：${density.toFixed(1)} 磅/ft³，品类上限 ${limit} 磅/ft³ — ${catLevel}`
+      + (score > 0 ? `（+${Math.min(score,40)}分）` : '')
+  });
+
+  // ② 材质交叉验证（仅当选了材质时）
+  if (materialKey && MATERIAL_DENSITY[materialKey]) {
+    const mat = MATERIAL_DENSITY[materialKey];
+    let matScore = 0, matLevel = '', matColor = '#34a853';
+
+    if (density > mat.ref) {
+      // 超过该材质实心原材料的密度 → 物理不可能
+      matScore = 50; matLevel = `❌ 物理不可能！${mat.label}实心密度上限仅 ${mat.ref} 磅/ft³`; matColor = '#c62828';
+    } else if (density > mat.max) {
+      // 超过成品合理上限
+      matScore = 30; matLevel = `⚠ 超出${mat.label}成品合理范围（上限 ${mat.max} 磅/ft³）`; matColor = '#ea4335';
+    } else if (density < mat.min && density > 0.1) {
+      // 低于合理下限（尺寸可能虚大，但不加分，仅提示）
+      matLevel = `ℹ 低于${mat.label}典型密度（下限 ${mat.min} 磅/ft³），尺寸偏大或结构较空`; matColor = '#888';
+    } else {
+      matLevel = `✓ 与${mat.label}材质密度吻合（${mat.min}–${mat.max} 磅/ft³）`;
+    }
+
+    score = Math.min(score + matScore, 60);
+    lines.push({
+      color: matColor,
+      text: `⬡ 材质验证（${mat.label}）：${matLevel}` + (matScore > 0 ? `（+${matScore}分）` : '')
+    });
+  }
+
+  return { score, density: density.toFixed(1), lines };
+}
+
+// ─── REWARD TIER ──────────────────────────────────────────────────────────
+const TIERS = [
+  { name:'超大件-轻型', range:'10–50 磅', pct:'20%', pctNum:0.20, min:10,  max:50  },
+  { name:'超大件-中型', range:'50–70 磅', pct:'40%', pctNum:0.40, min:50,  max:70  },
+  { name:'超大件-重型', range:'70–150 磅',pct:'60%', pctNum:0.60, min:70,  max:150 },
+  { name:'超大件-超重型',range:'>150 磅', pct:'80%', pctNum:0.80, min:150, max:Infinity },
+];
+
+// Returns {tier, isCliff, cliffDist}
+function getTier(weight) {
+  let tier = null;
+  for (const t of TIERS) {
+    if (weight > t.min && weight <= (t.max === Infinity ? Infinity : t.max)) {
+      tier = t; break;
+    }
+  }
+  if (!tier) return { tier: null, isCliff: false, cliffDist: null };
+
+  // Check cliff: within 3 lbs above the tier's lower boundary
+  const cliffDist = weight - tier.min;
+  const isCliff = cliffDist >= 0 && cliffDist <= 3;
+  return { tier, isCliff, cliffDist };
+}
+
+function renderTierBox(weight, price) {
+  if (!weight) {
+    document.getElementById('tier-box').innerHTML = '<span style="color:#aaa;font-size:13px">请填写申报重量</span>';
+    document.getElementById('cliff-alert').innerHTML = '';
+    return { cliffBonus: 0 };
+  }
+
+  const { tier, isCliff, cliffDist } = getTier(weight);
+  let html = '';
+  TIERS.forEach(t => {
+    const isActive = tier && t.name === tier.name;
+    const estimatedReward = price ? Math.min(price * t.pctNum, 120).toFixed(0) : '—';
+    html += `
+      <div class="tier-item ${isActive ? 'active' : ''} ${isActive && isCliff ? 'cliff' : ''}">
+        <div class="tier-range">${t.range}</div>
+        <div class="tier-name">${t.name}</div>
+        <div class="tier-pct">${t.pct}</div>
+        <div class="tier-reward">奖励≈ $${estimatedReward}</div>
+      </div>`;
+  });
+  document.getElementById('tier-box').innerHTML = html;
+
+  let cliffBonus = 0;
+  if (isCliff && tier) {
+    cliffBonus = 35;
+    document.getElementById('cliff-alert').innerHTML = `
+      <div class="cliff-alert">
+        ⚠ <strong>门槛堆积信号：</strong>
+        申报重量 <strong>${weight}磅</strong> 刚过 <strong>${tier.name}</strong> 下限 ${tier.min}磅，
+        仅超出 <strong>${cliffDist}磅</strong>。这是最典型的Gaming模式（刻意填到刚好过门槛）。
+        风险分额外加 +${cliffBonus}。
+      </div>`;
+  } else {
+    document.getElementById('cliff-alert').innerHTML = '';
+  }
+  return { cliffBonus };
+}
+
+// ─── BAR COLOR ─────────────────────────────────────────────────────────────
+function barColor(score) {
+  if (score < 30) return '#34a853';
+  if (score < 60) return '#fbbc04';
+  if (score < 80) return '#ea4335';
+  return '#c62828';
+}
+
+// ─── MAIN ANALYZE ──────────────────────────────────────────────────────────
+function analyze() {
+  const catKey  = document.getElementById('category').value;
+  const title   = document.getElementById('title').value;
+  const price   = parseFloat(document.getElementById('price').value) || 0;
+  const weight  = parseFloat(document.getElementById('weight').value) || 0;
+  const d1      = parseFloat(document.getElementById('dim1').value) || 0;
+  const d2      = parseFloat(document.getElementById('dim2').value) || 0;
+  const d3      = parseFloat(document.getElementById('dim3').value) || 0;
+
+  if (!catKey) { alert('请先选择品类'); return; }
+  if (!weight)  { alert('请填写申报重量'); return; }
+
+  const lookupKey = CAT_ID_MAP[catKey] || catKey;
+  const catData = CATEGORIES[lookupKey];
+
+  // Run modules
+  const m1 = scoreCategoryModule(weight, catData);
+  const m2 = scoreTitleModule(title);
+  const m3 = scorePriceModule(price, weight, catData);
+  const m4 = scoreWeightModule(weight, catData);
+  const m5 = scoreSellerModule();
+  const dimCheck = checkDimensions(d1, d2, d3);
+  const materialKey = document.getElementById('material').value;
+  const densityCheck = checkDensity(weight, d1, d2, d3, catData.industry, materialKey);
+
+  // Tier box + cliff detection (renders UI, returns cliff bonus)
+  const { cliffBonus } = renderTierBox(weight, price);
+
+  // Weighted total: M1-M4 weighted, M5 & cliff added directly
+  // 尺寸-重量矛盾加分：尺寸不达标但申报重量>50磅，强矛盾信号
+  const sizeContradictionBonus = (dimCheck.pass === false && weight > 50) ? 30 : 0;
+
+  const total = Math.min(100, Math.round(
+    m1.score * 0.25 +
+    m2.score * 0.35 +
+    m3.score * 0.25 +
+    m4.score * 0.15 +
+    Math.min(m5.score, 60) +
+    cliffBonus +
+    sizeContradictionBonus +
+    densityCheck.score
+  ));
+
+  // Determine verdict
+  let level, label, action;
+  if (total < 20) {
+    level = 'low';    label = '✅ 低风险 — AUTO PASS';       action = '自动通过，正常计入奖励';
+  } else if (total < 60) {
+    level = 'medium'; label = '🟡 中风险 — SAMPLE CHECK';    action = '抽检5%人工审核，其余通过';
+  } else if (total < 80) {
+    level = 'high';   label = '🔴 高风险 — MANUAL REVIEW';   action = '100%人工审核，审核通过后计入奖励';
+  } else {
+    level = 'block';  label = '🚫 极高风险 — BLOCK';         action = '拦截，不计入奖励；触发申诉流程';
+  }
+
+  // Render results
+  document.getElementById('form-card').style.display = 'none';
+  document.getElementById('result').style.display = 'block';
+
+  const rh = document.getElementById('result-header');
+  rh.className = 'result-header ' + level;
+  document.getElementById('score-display').textContent = total;
+  document.getElementById('score-display').style.color =
+    level === 'low' ? '#2e7d32' : level === 'medium' ? '#f57f17' : '#c62828';
+  document.getElementById('result-label').textContent = label;
+  document.getElementById('result-action').textContent = '建议处置：' + action;
+
+  // Dimension check
+  const sr = document.getElementById('size-result');
+  if (dimCheck.pass === null) {
+    sr.className = 'size-check'; sr.style.background = '#f5f5f5'; sr.style.color = '#888';
+  } else if (dimCheck.pass) {
+    sr.className = 'size-check pass';
+  } else {
+    sr.className = 'size-check fail';
+  }
+  sr.textContent = (dimCheck.pass === true ? '✅ 尺寸达标：' : dimCheck.pass === false ? '❌ 尺寸不达标：' : 'ℹ ') + dimCheck.msg;
+
+  // Density result
+  const dr = document.getElementById('density-result');
+  if (densityCheck.lines && densityCheck.lines.length > 0) {
+    dr.innerHTML = densityCheck.lines
+      .map(l => `<div style="color:${l.color};margin-top:6px;font-size:13px">${l.text}</div>`)
+      .join('');
+  } else {
+    dr.innerHTML = '<div style="color:#aaa;margin-top:6px;font-size:13px">⬡ 密度检测：未填写三边尺寸，跳过</div>';
+  }
+
+  // Module cards
+  const modules = [
+    { name:'Module 1 · 品类基准线',  weight:'25%', score: m1.score, reason: m1.reasons },
+    { name:'Module 2 · 标题关键词',  weight:'35%', score: m2.score, reason: m2.reasons },
+    { name:'Module 3 · 价格合理性',  weight:'25%', score: m3.score, reason: m3.reasons },
+    { name:'Module 4 · 重量分布偏差',weight:'15%', score: m4.score, reason: m4.reasons },
+  ];
+
+  const weightedCards = modules.map(m => `
+    <div class="module-card">
+      <div class="mod-name">${m.name} <span style="color:#aaa">(权重${m.weight})</span></div>
+      <div class="mod-score" style="color:${barColor(m.score)}">${m.score}</div>
+      <div class="bar"><div class="bar-fill" style="width:${m.score}%;background:${barColor(m.score)}"></div></div>
+      <div class="mod-reason">${m.reason}</div>
+    </div>
+  `).join('');
+
+  const m5Actual = Math.min(m5.score, 60);
+  const m5Color = m5.score === 0 ? '#34a853' : m5.score <= 40 ? '#fbbc04' : '#ea4335';
+  const m5Cap = m5.score > 60 ? `（上限60，实际加+${m5Actual}）` : '';
+  const m5Card = `
+    <div class="module-card">
+      <div class="mod-name">Module 5 · 卖家行为 <span style="color:#aaa">(直接加分，上限60)</span></div>
+      <div class="mod-score" style="color:${m5Color}">${m5.score > 0 ? '+' : ''}${m5.score}${m5Cap}</div>
+      <div class="mod-reason">${m5.reasons}</div>
+    </div>`;
+
+  document.getElementById('module-scores').innerHTML = weightedCards + m5Card;
+}
+
+function reset() {
+  document.getElementById('result').style.display = 'none';
+  document.getElementById('form-card').style.display = 'block';
+  ['beh1','beh2','beh3','beh4','beh5'].forEach(id => {
+    document.getElementById(id).checked = false;
+  });
+  document.getElementById('material').value = '';
+}
+</script>
+
+</body>
+</html>
