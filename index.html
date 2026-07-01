@@ -342,6 +342,7 @@
 
   <!-- RESULT -->
   <div id="result">
+    <div id="eligibility-banner"></div>
     <div class="result-header" id="result-header">
       <div class="score-big" id="score-display">--</div>
       <div>
@@ -751,7 +752,7 @@ function scoreSellerModule() {
 
 // ─── DIMENSION CHECK ───────────────────────────────────────────────────────
 function checkDimensions(d1, d2, d3) {
-  if (!d1 || !d2 || !d3) return { pass: null, msg: '未填写完整三边尺寸，跳过检测（不影响评分）' };
+  if (!d1 || !d2 || !d3) return { pass: null, msg: '未填写完整三边尺寸，跳过检测（不影响评分）', failedRules: [], passedRules: [] };
 
   const dims = [d1, d2, d3].map(Number).sort((a,b) => b - a);
   const [longest, second, shortest] = dims;
@@ -764,14 +765,14 @@ function checkDimensions(d1, d2, d3) {
 
   const pass = rule1 || rule2 || rule3 || rule4;
 
-  let details = [];
-  if (rule1) details.push(`最长边 ${longest}" > 59" ✓`);
-  if (rule2) details.push(`次长边 ${second}" > 33" ✓`);
-  if (rule3) details.push(`最短边 ${shortest}" > 33" ✓`);
-  if (rule4) details.push(`长度+围长 ${longest + girth}" > 130" ✓`);
-  if (!pass) details.push(`最长边${longest}" 次长边${second}" 最短边${shortest}" — 均未达门槛`);
+  const passedRules = [], failedRules = [];
+  rule1 ? passedRules.push(`最长边 ${longest}" > 59" ✓`) : failedRules.push(`最长边 ${longest}" ≤ 59"（需 > 59"）`);
+  rule2 ? passedRules.push(`次长边 ${second}" > 33" ✓`) : failedRules.push(`次长边 ${second}" ≤ 33"（需 > 33"）`);
+  rule3 ? passedRules.push(`最短边 ${shortest}" > 33" ✓`) : failedRules.push(`最短边 ${shortest}" ≤ 33"（需 > 33"）`);
+  rule4 ? passedRules.push(`长度+围长 ${longest+girth}" > 130" ✓`) : failedRules.push(`长度+围长 ${longest+girth}" ≤ 130"（需 > 130"）`);
 
-  return { pass, msg: details.join(' | ') };
+  const msg = pass ? passedRules.join(' | ') : '四项条件均未满足（满足任一即可）';
+  return { pass, msg, passedRules, failedRules };
 }
 
 // ─── DENSITY CHECK ─────────────────────────────────────────────────────────
@@ -983,6 +984,33 @@ function analyze() {
   document.getElementById('form-card').style.display = 'none';
   document.getElementById('result').style.display = 'block';
 
+  // ── 资格检测 Banner ──────────────────────────────────────────────
+  const eligBanner = document.getElementById('eligibility-banner');
+  if (dimCheck.pass === false) {
+    eligBanner.innerHTML = `
+      <div style="background:#fde8e8;border:2px solid #c62828;border-radius:10px;padding:16px 20px;margin-bottom:16px;">
+        <div style="font-size:15px;font-weight:700;color:#c62828;margin-bottom:10px;">
+          ❌ 不符合大重货尺寸门槛 — 该刊登无资格参与此次促销
+        </div>
+        <div style="font-size:13px;color:#777;margin-bottom:8px;">以下四项条件均未满足（满足任一即可）：</div>
+        ${dimCheck.failedRules.map(r => `<div style="font-size:13px;color:#c62828;margin:4px 0 4px 12px;">✗ ${r}</div>`).join('')}
+        <div style="font-size:12px;color:#999;margin-top:10px;border-top:1px solid #f5c6c6;padding-top:8px;">
+          以下欺诈风险评分仅供参考，本刊登因尺寸不达标已无法获得补贴。
+        </div>
+      </div>`;
+  } else if (dimCheck.pass === true) {
+    eligBanner.innerHTML = `
+      <div style="background:#e8f5e9;border:2px solid #2e7d32;border-radius:10px;padding:12px 20px;margin-bottom:16px;">
+        <div style="font-size:14px;font-weight:700;color:#2e7d32;">✅ 符合大重货尺寸门槛</div>
+        <div style="font-size:12px;color:#555;margin-top:4px;">${dimCheck.passedRules.join(' | ')}</div>
+      </div>`;
+  } else {
+    eligBanner.innerHTML = `
+      <div style="background:#f5f5f5;border:1px solid #ddd;border-radius:10px;padding:12px 20px;margin-bottom:16px;">
+        <div style="font-size:13px;color:#999;">ℹ 未填写三边尺寸，跳过资格检测（尺寸是参与促销的前置条件）</div>
+      </div>`;
+  }
+
   const rh = document.getElementById('result-header');
   rh.className = 'result-header ' + level;
   document.getElementById('score-display').textContent = total;
@@ -991,16 +1019,22 @@ function analyze() {
   document.getElementById('result-label').textContent = label;
   document.getElementById('result-action').textContent = '建议处置：' + action;
 
-  // Dimension check
+  // Dimension check — show each rule's pass/fail status
   const sr = document.getElementById('size-result');
   if (dimCheck.pass === null) {
-    sr.className = 'size-check'; sr.style.background = '#f5f5f5'; sr.style.color = '#888';
-  } else if (dimCheck.pass) {
-    sr.className = 'size-check pass';
+    sr.className = 'size-check';
+    sr.style.cssText = 'background:#f5f5f5;color:#888;';
+    sr.textContent = 'ℹ 未填写完整三边尺寸，跳过检测';
   } else {
-    sr.className = 'size-check fail';
+    const allRules = [
+      ...dimCheck.passedRules.map(r => `<span style="color:#2e7d32">✓ ${r}</span>`),
+      ...dimCheck.failedRules.map(r => `<span style="color:#c62828">✗ ${r}</span>`)
+    ];
+    sr.className = 'size-check ' + (dimCheck.pass ? 'pass' : 'fail');
+    sr.style.cssText = '';
+    sr.innerHTML = (dimCheck.pass ? '✅ 尺寸达标' : '❌ 尺寸不达标') + '<br>'
+      + '<div style="font-size:12px;margin-top:6px;line-height:1.8">' + allRules.join('<br>') + '</div>';
   }
-  sr.textContent = (dimCheck.pass === true ? '✅ 尺寸达标：' : dimCheck.pass === false ? '❌ 尺寸不达标：' : 'ℹ ') + dimCheck.msg;
 
   // Density result
   const dr = document.getElementById('density-result');
