@@ -624,7 +624,8 @@ function scoreTitleModule(title) {
 
 // ─── MODULE 3: PRICE INTELLIGENCE ─────────────────────────────────────────
 function scorePriceModule(price, weight, catData) {
-  if (!price || !weight || weight === 0) return { score: 50, reasons: '价格或重量未填写' };
+  if (!price) return { score: 0, reasons: '未填写价格，跳过（不影响评分）' };
+  if (!weight || weight === 0) return { score: 0, reasons: '未填写重量，跳过（不影响评分）' };
 
   const ppl = price / weight;
   const { pricePerLbMin, pricePerLbMax } = catData;
@@ -700,7 +701,10 @@ function scoreWeightModule(weight, catData) {
   const deviation = (weight - p50) / p50;
   let score, reasons;
 
-  if (deviation < 0.20) {
+  if (deviation < 0) {
+    score = 0;
+    reasons = `申报重量 ${weight}磅 低于品类中位数 ${p50}磅，无虚高风险`;
+  } else if (deviation < 0.20) {
     score = 0;
     reasons = `申报重量 ${weight}磅 接近品类中位数 ${p50}磅（偏差 ${(deviation*100).toFixed(0)}%），正常`;
   } else if (deviation < 0.50) {
@@ -747,7 +751,7 @@ function scoreSellerModule() {
 
 // ─── DIMENSION CHECK ───────────────────────────────────────────────────────
 function checkDimensions(d1, d2, d3) {
-  if (!d1 && !d2 && !d3) return { pass: null, msg: '未填写尺寸，跳过门槛检测（不影响评分）' };
+  if (!d1 || !d2 || !d3) return { pass: null, msg: '未填写完整三边尺寸，跳过检测（不影响评分）' };
 
   const dims = [d1, d2, d3].map(Number).sort((a,b) => b - a);
   const [longest, second, shortest] = dims;
@@ -897,12 +901,12 @@ function renderTierBox(weight, price) {
 
   let cliffBonus = 0;
   if (isCliff && tier) {
-    cliffBonus = 35;
+    cliffBonus = tier.min === 10 ? 15 : 35;
     document.getElementById('cliff-alert').innerHTML = `
       <div class="cliff-alert">
         ⚠ <strong>门槛堆积信号：</strong>
         申报重量 <strong>${weight}磅</strong> 刚过 <strong>${tier.name}</strong> 下限 ${tier.min}磅，
-        仅超出 <strong>${cliffDist}磅</strong>。这是最典型的Gaming模式（刻意填到刚好过门槛）。
+        仅超出 <strong>${cliffDist}磅</strong>。${tier.min === 10 ? '刚刚进入促销资格门槛。' : '这是最典型的Gaming模式（刻意填到刚好过门槛）。'}
         风险分额外加 +${cliffBonus}。
       </div>`;
   } else {
