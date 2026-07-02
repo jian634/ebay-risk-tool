@@ -97,6 +97,42 @@
     padding: 10px 14px; font-size: 13px; color: #856404; margin-bottom: 12px;
   }
 
+  /* ── 新增：批量分析 ── */
+  .batch-card { margin-top: 20px; }
+  .batch-drop {
+    border: 2px dashed #ccc; border-radius: 6px; padding: 20px;
+    text-align: center; color: #888; font-size: 13px; cursor: pointer;
+    transition: border-color .2s, background .2s; background: #fafafa; margin-bottom: 10px;
+  }
+  .batch-drop:hover, .batch-drop.drag-over { border-color: #3665f3; background: #f0f4ff; color: #3665f3; }
+  .batch-run-btn {
+    display: block; width: 100%; padding: 11px; background: #1a7340;
+    color: white; border: none; border-radius: 6px; font-size: 15px;
+    font-weight: bold; cursor: pointer; margin-top: 10px;
+  }
+  .batch-run-btn:hover { background: #155c34; }
+  .batch-run-btn:disabled { background: #aaa; cursor: not-allowed; }
+  #batch-progress { font-size: 12px; color: #666; margin: 8px 0; min-height: 18px; }
+  #batch-table-wrap { overflow-x: auto; margin-top: 14px; }
+  .btable { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .btable th { background: #3665f3; color: white; padding: 7px 10px; text-align: left; white-space: nowrap; }
+  .btable td { padding: 6px 10px; border-bottom: 1px solid #eee; white-space: nowrap; }
+  .btable tr:hover td { background: #f0f4ff; cursor: pointer; }
+  .btable tr.risk-block td { background: #fff0f0; }
+  .btable tr.risk-high  td { background: #fff8f8; }
+  .btable tr.risk-medium td { background: #fffdf0; }
+  .btable tr.risk-low   td { background: #f0fbf4; }
+  .badge-block  { background:#c62828; color:#fff; border-radius:3px; padding:2px 6px; font-size:11px; }
+  .badge-high   { background:#ea4335; color:#fff; border-radius:3px; padding:2px 6px; font-size:11px; }
+  .badge-medium { background:#fbbc04; color:#333; border-radius:3px; padding:2px 6px; font-size:11px; }
+  .badge-low    { background:#34a853; color:#fff; border-radius:3px; padding:2px 6px; font-size:11px; }
+  .export-btn {
+    margin-top: 10px; padding: 8px 18px; background: #3665f3; color: white;
+    border: none; border-radius: 5px; font-size: 13px; cursor: pointer; font-weight: bold;
+  }
+  .export-btn:hover { background: #2851d0; }
+  .batch-format { font-size: 11px; color: #888; margin-bottom: 8px; line-height: 1.6; }
+
   /* ── 新增：Item ID 抓取行 ── */
   .fetch-btn {
     padding: 8px 14px; background: #3665f3; color: white; border: none;
@@ -417,6 +453,37 @@
     <button class="btn" style="background:#555;" onclick="reset()">← 重新输入</button>
   </div>
 
+</div>
+
+<!-- ══════════════ 批量分析卡片 ══════════════ -->
+<div class="container">
+  <div class="card batch-card">
+    <h2>批量分析</h2>
+
+    <div class="batch-format">
+      📋 CSV格式（第一行为表头，顺序固定）：<br>
+      <code>item_id, seller_id, category_id, title, weight_lbs, price, dim_l, dim_w, dim_h</code><br>
+      category_id 填 leaf_categ_id（如 <code>c175758</code>）或命名key（如 <code>beds</code>）&nbsp;·&nbsp;
+      dim三边可留空（0或空）&nbsp;·&nbsp;price可留空&nbsp;·&nbsp;weight_lbs 必填
+    </div>
+
+    <div class="batch-drop" id="batch-drop"
+         onclick="document.getElementById('batch-file-input').click()"
+         ondragover="event.preventDefault();this.classList.add('drag-over')"
+         ondragleave="this.classList.remove('drag-over')"
+         ondrop="event.preventDefault();this.classList.remove('drag-over');handleBatchFile(event.dataTransfer.files[0])">
+      📂 点击上传 CSV 或拖拽到此处
+      <input type="file" id="batch-file-input" accept=".csv" style="display:none"
+             onchange="handleBatchFile(this.files[0])">
+    </div>
+
+    <button class="batch-run-btn" id="batch-run-btn" onclick="runBatch()" disabled>
+      ⚡ 开始批量分析
+    </button>
+
+    <div id="batch-progress"></div>
+    <div id="batch-table-wrap"></div>
+  </div>
 </div>
 
 <script>
@@ -1160,6 +1227,228 @@ function reset() {
 
 // ── 后端服务地址 ────────────────────────────────────────────────────────────
 const RISK_SERVICE = 'http://localhost:8002';
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 批量分析核心
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── cliff加分（纯计算版，不渲染DOM）────────────────────────────────────────
+function calcCliffBonus(weight) {
+  const { tier, isCliff } = getTier(weight);
+  if (!isCliff || !tier) return 0;
+  return tier.min === 10 ? 15 : 35;
+}
+
+// ── 单行完整评分（不触碰DOM）────────────────────────────────────────────────
+function scoreAllBatch(row) {
+  // row: {categoryId, title, weight, price, d1, d2, d3}
+  const lookupKey = CAT_ID_MAP[row.categoryId] || row.categoryId;
+  const catData = CATEGORIES[lookupKey];
+  if (!catData) return null;
+
+  const w  = parseFloat(row.weight) || 0;
+  const pr = parseFloat(row.price)  || 0;
+  const d1 = parseFloat(row.d1) || 0;
+  const d2 = parseFloat(row.d2) || 0;
+  const d3 = parseFloat(row.d3) || 0;
+
+  const m1 = scoreCategoryModule(w, catData);
+  const m2 = scoreTitleModule(row.title || '');
+  const m3 = scorePriceModule(pr, w, catData);
+  const m4 = scoreWeightModule(w, catData);
+  const cliff = calcCliffBonus(w);
+  const dimCheck = checkDimensions(d1, d2, d3);
+  const density = checkDensity(w, d1, d2, d3, catData.industry, '');
+  const sizeContra = (dimCheck.pass === false && w > 50) ? 30 : 0;
+
+  const total = Math.min(100, Math.round(
+    m1.score * 0.25 + m2.score * 0.35 + m3.score * 0.25 + m4.score * 0.15
+    + cliff + sizeContra + density.score
+  ));
+
+  let level, badge;
+  if (total < 20)      { level = 'low';    badge = '✅ 低风险'; }
+  else if (total < 60) { level = 'medium'; badge = '🟡 中风险'; }
+  else if (total < 80) { level = 'high';   badge = '🔴 高风险'; }
+  else                 { level = 'block';  badge = '🚫 极高风险'; }
+
+  return { total, level, badge, m1, m2, m3, m4, cliff, sizeContra, densityScore: density.score, catData, dimCheck };
+}
+
+// ── CSV解析 ─────────────────────────────────────────────────────────────────
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return [];
+  // 表头（不区分大小写，去空格）
+  const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+  const idx = k => headers.indexOf(k);
+
+  return lines.slice(1).map(line => {
+    const cols = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+    return {
+      itemId:     cols[idx('item_id')]     || cols[0] || '',
+      sellerId:   cols[idx('seller_id')]   || cols[1] || '',
+      categoryId: cols[idx('category_id')] || cols[2] || '',
+      title:      cols[idx('title')]       || cols[3] || '',
+      weight:     cols[idx('weight_lbs')]  || cols[4] || '',
+      price:      cols[idx('price')]       || cols[5] || '',
+      d1:         cols[idx('dim_l')]       || cols[6] || '',
+      d2:         cols[idx('dim_w')]       || cols[7] || '',
+      d3:         cols[idx('dim_h')]       || cols[8] || '',
+    };
+  }).filter(r => r.weight && parseFloat(r.weight) > 0);
+}
+
+// ── 文件读取 ─────────────────────────────────────────────────────────────────
+let _batchRows = [];
+
+function handleBatchFile(file) {
+  if (!file) return;
+  const drop = document.getElementById('batch-drop');
+  const reader = new FileReader();
+  reader.onload = e => {
+    _batchRows = parseCSV(e.target.result);
+    if (_batchRows.length === 0) {
+      drop.textContent = '❌ 未解析到有效数据，请检查CSV格式';
+      document.getElementById('batch-run-btn').disabled = true;
+    } else {
+      drop.innerHTML = `✅ <strong>${file.name}</strong> — 共 ${_batchRows.length} 条，点击「开始批量分析」`;
+      document.getElementById('batch-run-btn').disabled = false;
+    }
+  };
+  reader.readAsText(file, 'UTF-8');
+}
+
+// ── 主批量分析 ───────────────────────────────────────────────────────────────
+let _batchResults = [];
+
+function runBatch() {
+  if (!_batchRows.length) return;
+  const btn = document.getElementById('batch-run-btn');
+  const progress = document.getElementById('batch-progress');
+  btn.disabled = true;
+  btn.textContent = '⏳ 分析中...';
+
+  _batchResults = [];
+  let skipped = 0;
+
+  _batchRows.forEach((row, i) => {
+    const result = scoreAllBatch(row);
+    if (!result) { skipped++; return; }
+    _batchResults.push({ row, result });
+  });
+
+  // 按总分降序
+  _batchResults.sort((a, b) => b.result.total - a.result.total);
+
+  const high   = _batchResults.filter(r => r.result.total >= 80).length;
+  const medium = _batchResults.filter(r => r.result.total >= 60 && r.result.total < 80).length;
+  const mid2   = _batchResults.filter(r => r.result.total >= 20 && r.result.total < 60).length;
+
+  progress.innerHTML = `完成 ${_batchResults.length} 条（跳过 ${skipped} 条品类未识别）&nbsp;·&nbsp;
+    <span style="color:#c62828;font-weight:bold">极高风险 ${high}</span> &nbsp;
+    <span style="color:#ea4335">高风险 ${medium}</span> &nbsp;
+    <span style="color:#f9a825">中风险 ${mid2}</span>`;
+
+  renderBatchTable();
+  btn.textContent = '⚡ 重新分析';
+  btn.disabled = false;
+}
+
+// ── 渲染结果表格 ─────────────────────────────────────────────────────────────
+function renderBatchTable() {
+  const wrap = document.getElementById('batch-table-wrap');
+  if (!_batchResults.length) { wrap.innerHTML = ''; return; }
+
+  const levelClass = { low:'risk-low', medium:'risk-medium', high:'risk-high', block:'risk-block' };
+  const badgeClass = { low:'badge-low', medium:'badge-medium', high:'badge-high', block:'badge-block' };
+
+  const rows = _batchResults.map((r, idx) => {
+    const { row, result } = r;
+    const title = (row.title || '—').slice(0, 32) + ((row.title||'').length > 32 ? '…' : '');
+    const catName = result.catData ? result.catData.name : row.categoryId;
+    const flags = [];
+    if (result.cliff > 0)        flags.push(`Cliff+${result.cliff}`);
+    if (result.sizeContra > 0)   flags.push('尺寸矛盾+30');
+    if (result.densityScore > 0) flags.push(`密度+${result.densityScore}`);
+    return `
+      <tr class="${levelClass[result.level]}" onclick="viewBatchDetail(${idx})" title="点击查看详细报告">
+        <td>${row.itemId || '—'}</td>
+        <td>${row.sellerId || '—'}</td>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${row.title}">${title}</td>
+        <td>${catName}</td>
+        <td>${row.weight}</td>
+        <td>${row.price || '—'}</td>
+        <td style="font-weight:bold;font-size:14px">${result.total}</td>
+        <td><span class="${badgeClass[result.level]}">${result.badge}</span></td>
+        <td>${result.m1.score}</td>
+        <td>${result.m2.score}</td>
+        <td>${result.m3.score}</td>
+        <td>${result.m4.score}</td>
+        <td style="color:${flags.length?'#c62828':'#34a853'}">${flags.join(' ') || '—'}</td>
+      </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <table class="btable">
+      <thead><tr>
+        <th>Item ID</th><th>Seller ID</th><th>标题</th><th>品类</th>
+        <th>重量(lb)</th><th>价格($)</th>
+        <th>总分</th><th>级别</th>
+        <th>M1</th><th>M2</th><th>M3</th><th>M4</th><th>加分项</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <button class="export-btn" onclick="exportBatchCSV()">📥 导出结果CSV</button>`;
+}
+
+// ── 点击行 → 跳到单条详细报告 ───────────────────────────────────────────────
+function viewBatchDetail(idx) {
+  const { row, result } = _batchResults[idx];
+  // 填充表单
+  document.getElementById('category').value = row.categoryId;
+  document.getElementById('title').value    = row.title  || '';
+  document.getElementById('weight').value   = row.weight || '';
+  document.getElementById('price').value    = row.price  || '';
+  document.getElementById('dim1').value     = row.d1 || '';
+  document.getElementById('dim2').value     = row.d2 || '';
+  document.getElementById('dim3').value     = row.d3 || '';
+  // 清除行为勾选
+  ['beh1','beh2','beh3','beh4','beh5'].forEach(id => {
+    document.getElementById(id).checked = false;
+  });
+  document.getElementById('material').value = '';
+  // 触发单条分析并滚动到顶部
+  analyze();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// ── 导出CSV ──────────────────────────────────────────────────────────────────
+function exportBatchCSV() {
+  const header = 'item_id,seller_id,title,category,weight_lbs,price,total_score,level,M1,M2,M3,M4,cliff,size_contra,density,flags\n';
+  const rows = _batchResults.map(({ row, result }) => {
+    const flags = [];
+    if (result.cliff > 0)        flags.push(`Cliff+${result.cliff}`);
+    if (result.sizeContra > 0)   flags.push('尺寸矛盾+30');
+    if (result.densityScore > 0) flags.push(`密度+${result.densityScore}`);
+    const catName = result.catData ? result.catData.name : row.categoryId;
+    const esc = v => `"${(v||'').toString().replace(/"/g,'""')}"`;
+    return [
+      esc(row.itemId), esc(row.sellerId), esc(row.title), esc(catName),
+      row.weight, row.price,
+      result.total, result.badge,
+      result.m1.score, result.m2.score, result.m3.score, result.m4.score,
+      result.cliff, result.sizeContra, result.densityScore,
+      esc(flags.join('; '))
+    ].join(',');
+  });
+  const csv = '﻿' + header + rows.join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `risk_batch_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
 
 // ── Feature 2: Item ID 抓取（填标题 + 重量）────────────────────────────────
 async function fetchItem() {
