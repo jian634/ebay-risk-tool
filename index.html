@@ -1320,7 +1320,10 @@ function handleBatchFile(file) {
 }
 
 // ── 主批量分析 ───────────────────────────────────────────────────────────────
-let _batchResults = [];
+let _batchResults = [];     // 全部结果（含低风险），按分数降序
+let _displayResults = [];   // 只含中/高/极高风险（总分≥20），用于分页展示
+let _currentPage = 0;
+const PAGE_SIZE = 100;
 
 function runBatch() {
   if (!_batchRows.length) return;
@@ -1332,38 +1335,50 @@ function runBatch() {
   _batchResults = [];
   let skipped = 0;
 
-  _batchRows.forEach((row, i) => {
+  _batchRows.forEach(row => {
     const result = scoreAllBatch(row);
     if (!result) { skipped++; return; }
     _batchResults.push({ row, result });
   });
 
-  // 按总分降序
   _batchResults.sort((a, b) => b.result.total - a.result.total);
+  _displayResults = _batchResults.filter(r => r.result.total >= 20);
 
-  const high   = _batchResults.filter(r => r.result.total >= 80).length;
-  const medium = _batchResults.filter(r => r.result.total >= 60 && r.result.total < 80).length;
-  const mid2   = _batchResults.filter(r => r.result.total >= 20 && r.result.total < 60).length;
+  const cntBlock  = _batchResults.filter(r => r.result.total >= 80).length;
+  const cntHigh   = _batchResults.filter(r => r.result.total >= 60 && r.result.total < 80).length;
+  const cntMedium = _batchResults.filter(r => r.result.total >= 20 && r.result.total < 60).length;
+  const cntLow    = _batchResults.filter(r => r.result.total < 20).length;
 
-  progress.innerHTML = `完成 ${_batchResults.length} 条（跳过 ${skipped} 条品类未识别）&nbsp;·&nbsp;
-    <span style="color:#c62828;font-weight:bold">极高风险 ${high}</span> &nbsp;
-    <span style="color:#ea4335">高风险 ${medium}</span> &nbsp;
-    <span style="color:#f9a825">中风险 ${mid2}</span>`;
+  progress.innerHTML =
+    `共 ${_batchResults.length} 条（跳过 ${skipped} 条品类未识别）&nbsp;·&nbsp;` +
+    `<span style="color:#c62828;font-weight:bold">极高风险 ${cntBlock}</span> &nbsp;` +
+    `<span style="color:#ea4335;font-weight:bold">高风险 ${cntHigh}</span> &nbsp;` +
+    `<span style="color:#f9a825;font-weight:bold">中风险 ${cntMedium}</span> &nbsp;` +
+    `<span style="color:#888">低风险 ${cntLow}（已过滤，见导出CSV）</span>`;
 
+  _currentPage = 0;
   renderBatchTable();
   btn.textContent = '⚡ 重新分析';
   btn.disabled = false;
 }
 
-// ── 渲染结果表格 ─────────────────────────────────────────────────────────────
+// ── 渲染当前页（每页100条，只显示总分≥20的行）────────────────────────────────
 function renderBatchTable() {
   const wrap = document.getElementById('batch-table-wrap');
-  if (!_batchResults.length) { wrap.innerHTML = ''; return; }
+  if (!_displayResults.length) {
+    wrap.innerHTML = '<div style="color:#888;font-size:13px;padding:12px 0">无中/高风险条目</div>';
+    return;
+  }
 
   const levelClass = { low:'risk-low', medium:'risk-medium', high:'risk-high', block:'risk-block' };
   const badgeClass = { low:'badge-low', medium:'badge-medium', high:'badge-high', block:'badge-block' };
 
-  const rows = _batchResults.map((r, idx) => {
+  const totalPages = Math.ceil(_displayResults.length / PAGE_SIZE);
+  const start = _currentPage * PAGE_SIZE;
+  const pageItems = _displayResults.slice(start, start + PAGE_SIZE);
+
+  const rows = pageItems.map((r, localIdx) => {
+    const globalIdx = start + localIdx;
     const { row, result } = r;
     const title = (row.title || '—').slice(0, 32) + ((row.title||'').length > 32 ? '…' : '');
     const catName = result.catData ? result.catData.name : row.categoryId;
@@ -1372,10 +1387,10 @@ function renderBatchTable() {
     if (result.sizeContra > 0)   flags.push('尺寸矛盾+30');
     if (result.densityScore > 0) flags.push(`密度+${result.densityScore}`);
     return `
-      <tr class="${levelClass[result.level]}" onclick="viewBatchDetail(${idx})" title="点击查看详细报告">
+      <tr class="${levelClass[result.level]}" onclick="viewBatchDetail(${globalIdx})" title="点击查看详细报告">
         <td>${row.itemId || '—'}</td>
         <td>${row.sellerId || '—'}</td>
-        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${row.title}">${title}</td>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${row.title||''}">${title}</td>
         <td>${catName}</td>
         <td>${row.weight}</td>
         <td>${row.price || '—'}</td>
@@ -1385,12 +1400,23 @@ function renderBatchTable() {
         <td>${result.m2.score}</td>
         <td>${result.m3.score}</td>
         <td>${result.m4.score}</td>
-        <td style="color:${flags.length?'#c62828':'#34a853'}">${flags.join(' ') || '—'}</td>
+        <td style="color:${flags.length?'#c62828':'#999'}">${flags.join(' ') || '—'}</td>
       </tr>`;
   }).join('');
 
-  wrap.innerHTML = `
-    <table class="btable">
+  // 分页控件
+  const pageInfo = `第 ${_currentPage + 1} / ${totalPages} 页（共 ${_displayResults.length} 条中高风险）`;
+  const prevBtn  = `<button onclick="changePage(-1)" ${_currentPage===0?'disabled':''} style="padding:5px 12px;margin-right:6px;border:1px solid #ccc;border-radius:4px;cursor:pointer;background:${_currentPage===0?'#f5f5f5':'white'}">‹ 上一页</button>`;
+  const nextBtn  = `<button onclick="changePage(1)" ${_currentPage>=totalPages-1?'disabled':''} style="padding:5px 12px;margin-left:6px;border:1px solid #ccc;border-radius:4px;cursor:pointer;background:${_currentPage>=totalPages-1?'#f5f5f5':'white'}">下一页 ›</button>`;
+  const pagination = `<div style="display:flex;align-items:center;gap:4px;margin:10px 0;font-size:13px;color:#555">
+    ${prevBtn}<span>${pageInfo}</span>${nextBtn}
+    <span style="margin-left:auto">
+      <button class="export-btn" onclick="exportBatchCSV()">📥 导出全部结果CSV</button>
+    </span>
+  </div>`;
+
+  wrap.innerHTML = pagination +
+    `<table class="btable">
       <thead><tr>
         <th>Item ID</th><th>Seller ID</th><th>标题</th><th>品类</th>
         <th>重量(lb)</th><th>价格($)</th>
@@ -1398,13 +1424,19 @@ function renderBatchTable() {
         <th>M1</th><th>M2</th><th>M3</th><th>M4</th><th>加分项</th>
       </tr></thead>
       <tbody>${rows}</tbody>
-    </table>
-    <button class="export-btn" onclick="exportBatchCSV()">📥 导出结果CSV</button>`;
+    </table>` + pagination;
+}
+
+function changePage(dir) {
+  const totalPages = Math.ceil(_displayResults.length / PAGE_SIZE);
+  _currentPage = Math.max(0, Math.min(totalPages - 1, _currentPage + dir));
+  renderBatchTable();
+  document.getElementById('batch-table-wrap').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // ── 点击行 → 跳到单条详细报告 ───────────────────────────────────────────────
 function viewBatchDetail(idx) {
-  const { row, result } = _batchResults[idx];
+  const { row, result } = _displayResults[idx];
   // 填充表单
   document.getElementById('category').value = row.categoryId;
   document.getElementById('title').value    = row.title  || '';
