@@ -451,6 +451,8 @@
       <div class="module-scores" id="module-scores"></div>
     </div>
 
+    <div id="log-notice" style="display:none;margin-top:12px;padding:10px 14px;border-radius:6px;font-size:13px"></div>
+
     <button class="btn" style="background:#555;" onclick="reset()">← 重新输入</button>
   </div>
 
@@ -1216,6 +1218,22 @@ function analyze() {
 
   document.getElementById('module-scores').innerHTML = weightedCards + m5Card;
   renderAiRefPanel(d1, d2, d3);
+
+  // 中/高/block 自动记录到桌面 Excel
+  if (level !== 'low') {
+    autoLogFlagged({
+      item_id:     document.getElementById('item-id').value.trim(),
+      category_id: catKey,
+      title, weight_lbs: weight, price,
+      dim_l: d1, dim_w: d2, dim_h: d3,
+      score: total, verdict: level,
+      m1: m1.score, m2: m2.score, m3: m3.score, m4: m4.score,
+      cliff: cliffBonus, size_contra: sizeContradictionBonus,
+      density: densityCheck.score,
+    });
+  } else {
+    document.getElementById('log-notice').style.display = 'none';
+  }
 }
 
 function reset() {
@@ -1532,6 +1550,31 @@ async function fetchItem() {
   } catch (e) {
     status.style.color = '#c0392b';
     status.textContent = `❌ 抓取失败：${e.message}。请确认 risk_service.py 已启动（python risk_service.py）`;
+  }
+}
+
+// ── 自动记录高风险刊登到桌面 Excel ──────────────────────────────────────────
+async function autoLogFlagged(data) {
+  const notice = document.getElementById('log-notice');
+  notice.style.display = 'block';
+  notice.style.cssText = 'display:block;margin-top:12px;padding:10px 14px;border-radius:6px;font-size:13px;background:#fff8e1;color:#7b5f00;border:1px solid #ffe082';
+  notice.textContent = '⏳ 正在记录到桌面 Excel...';
+  try {
+    const r = await fetch(`${RISK_SERVICE}/log-flagged`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+      signal: AbortSignal.timeout(8000),
+    });
+    const res = await r.json();
+    if (res.status === 'ok') {
+      const levelLabel = { medium:'🟡 中风险', high:'🔴 高风险', block:'🚫 BLOCK' }[data.verdict] || '';
+      notice.style.cssText = 'display:block;margin-top:12px;padding:10px 14px;border-radius:6px;font-size:13px;background:#e8f5e9;color:#1b5e20;border:1px solid #a5d6a7';
+      notice.textContent = `✅ 已记录到桌面 Excel（第 ${res.row} 条）— ${levelLabel} · 风险分 ${data.score}`;
+    }
+  } catch (e) {
+    notice.style.cssText = 'display:block;margin-top:12px;padding:10px 14px;border-radius:6px;font-size:13px;background:#f5f5f5;color:#888;border:1px solid #ddd';
+    notice.textContent = `ℹ 未记录（risk_service 未运行）：${e.message}`;
   }
 }
 
