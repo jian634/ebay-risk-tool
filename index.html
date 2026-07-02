@@ -443,6 +443,7 @@
       <h2>尺寸门槛检测（前置条件）</h2>
       <div class="size-check" id="size-result">--</div>
       <div id="density-result" style="margin-top:10px;font-size:13px;color:#555;"></div>
+      <div id="ai-ref-panel"></div>
     </div>
 
     <div class="card">
@@ -1214,6 +1215,7 @@ function analyze() {
     </div>`;
 
   document.getElementById('module-scores').innerHTML = weightedCards + m5Card;
+  renderAiRefPanel(d1, d2, d3);
 }
 
 function reset() {
@@ -1534,12 +1536,15 @@ async function fetchItem() {
 }
 
 // ── Feature 1: AI 估算区间（选择品类后自动触发）─────────────────────────────
+let _lastAiDims = null;
+
 async function fetchAiDimensions() {
   const sel = document.getElementById('category');
   const panel = document.getElementById('ai-dim-panel');
   const ranges = document.getElementById('ai-dim-ranges');
   const note = document.getElementById('ai-dim-note');
 
+  _lastAiDims = null;
   if (!sel.value) { panel.style.display = 'none'; return; }
 
   const catName = sel.options[sel.selectedIndex].text;
@@ -1559,6 +1564,7 @@ async function fetchAiDimensions() {
       throw new Error(e.detail || 'HTTP ' + r.status);
     }
     const d = await r.json();
+    _lastAiDims = d;
     ranges.innerHTML = `
       <div class="ai-dim-item"><span>最长边 (in)</span><span>${d.l_min} – ${d.l_max}"</span></div>
       <div class="ai-dim-item"><span>次长边 (in)</span><span>${d.w_min} – ${d.w_max}"</span></div>
@@ -1569,6 +1575,52 @@ async function fetchAiDimensions() {
     ranges.innerHTML = `<span style="color:#c0392b;font-size:11px">⚠ AI 不可用：${e.message}</span>`;
     note.textContent = '请确认 risk_service.py 已启动';
   }
+}
+
+// ── 结果页 AI 尺寸对比面板 ──────────────────────────────────────────────────
+function renderAiRefPanel(d1, d2, d3) {
+  const panel = document.getElementById('ai-ref-panel');
+  if (!_lastAiDims) {
+    panel.innerHTML = `<div style="color:#bbb;font-size:12px;margin-top:10px">
+      📐 AI估算区间未加载（选品类时若 risk_service 在线会自动获取）
+    </div>`;
+    return;
+  }
+
+  const ai = _lastAiDims;
+  const submitted = [d1, d2, d3].sort((a, b) => b - a);
+  const labels = ['最长边', '次长边', '最短边'];
+  const ranges = [[ai.l_min, ai.l_max], [ai.w_min, ai.w_max], [ai.h_min, ai.h_max]];
+
+  function dimStatus(val, min, max) {
+    if (!val || val <= 0)   return { color: '#aaa',     icon: '—', text: '未填写' };
+    if (val >= min && val <= max)
+                            return { color: '#2e7d32',  icon: '✓', text: `${val}" 在估算区间内` };
+    if (val < min)          return { color: '#f57f17',  icon: '↓', text: `${val}" 低于估算下限 ${min}"` };
+    if (val <= max * 1.3)   return { color: '#f57f17',  icon: '↑', text: `${val}" 略超估算上限 ${max}"` };
+    return                         { color: '#c62828',  icon: '✗', text: `${val}" 远超估算上限 ${max}"（尺寸可疑）` };
+  }
+
+  const rows = labels.map((label, i) => {
+    const val = submitted[i] || 0;
+    const [min, max] = ranges[i];
+    const st = dimStatus(val, min, max);
+    return `<div style="display:flex;align-items:center;gap:10px;margin:5px 0;font-size:12px">
+      <span style="width:48px;color:#666;flex-shrink:0">${label}</span>
+      <span style="width:90px;color:#888;flex-shrink:0">估算 ${min}"–${max}"</span>
+      <span style="color:${st.color};font-weight:500">${st.icon} ${st.text}</span>
+    </div>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div style="margin-top:12px;padding:10px 14px;background:#eef4ff;border-radius:6px;border:1px solid #c3d6ff">
+      <div style="font-size:11px;font-weight:700;color:#3665f3;margin-bottom:8px">
+        📐 AI估算该品类典型外包装尺寸
+        <span style="font-weight:400;color:#888;margin-left:6px">与申报三边对比（仅参考）</span>
+      </div>
+      ${rows}
+      ${ai.note ? `<div style="font-size:11px;color:#666;margin-top:8px;padding-top:6px;border-top:1px solid #d0deff">💬 ${ai.note}</div>` : ''}
+    </div>`;
 }
 </script>
 
