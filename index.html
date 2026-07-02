@@ -96,6 +96,34 @@
     background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px;
     padding: 10px 14px; font-size: 13px; color: #856404; margin-bottom: 12px;
   }
+
+  /* ── 新增：Item ID 抓取行 ── */
+  .fetch-btn {
+    padding: 8px 14px; background: #3665f3; color: white; border: none;
+    border-radius: 4px; font-size: 13px; font-weight: bold; cursor: pointer;
+    white-space: nowrap; height: 36px; align-self: flex-end;
+  }
+  .fetch-btn:hover { background: #2851d0; }
+  .fetch-row { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 14px; }
+  .fetch-status { font-size: 11px; color: #666; margin-top: 5px; min-height: 16px; }
+
+  /* ── 新增：AI 估算区间面板 ── */
+  .ai-dim-panel {
+    display: none; margin-top: 8px; padding: 10px 14px;
+    background: #eef4ff; border: 1px solid #c3d6ff; border-radius: 6px;
+    font-size: 12px; color: #333;
+  }
+  .ai-dim-label { font-size: 11px; font-weight: bold; color: #3665f3; margin-bottom: 6px; }
+  .ai-dim-ranges { display: flex; gap: 20px; flex-wrap: wrap; }
+  .ai-dim-item { display: flex; flex-direction: column; }
+  .ai-dim-item span:first-child { font-size: 10px; color: #888; }
+  .ai-dim-item span:last-child { font-size: 13px; font-weight: bold; color: #1a3a7a; }
+  .ai-dim-note { font-size: 11px; color: #666; margin-top: 6px; }
+  .ai-dim-tag {
+    display: inline-block; font-size: 10px; color: #3665f3;
+    border: 1px solid #c3d6ff; border-radius: 3px; padding: 1px 5px;
+    margin-left: 6px; vertical-align: middle;
+  }
 </style>
 </head>
 <body>
@@ -114,7 +142,7 @@
     <div class="form-row">
       <div class="form-group">
         <label>品类 Category</label>
-        <select id="category">
+        <select id="category" onchange="fetchAiDimensions()">
           <option value="">-- 选择品类 --</option>
           <optgroup label="─── 汽摩配 Parts &amp; Accessories ───">
           <option value="c36475">Body Kits 车身套件 [36475]</option>
@@ -260,8 +288,26 @@
           <option value="c11071">TVs 电视 [11071]</option>
           </optgroup>
         </select>
+        <!-- AI 估算区间面板 -->
+        <div class="ai-dim-panel" id="ai-dim-panel">
+          <div class="ai-dim-label">📐 估算区间 <span class="ai-dim-tag">AI估算</span></div>
+          <div class="ai-dim-ranges" id="ai-dim-ranges"></div>
+          <div class="ai-dim-note" id="ai-dim-note"></div>
+        </div>
       </div>
     </div>
+
+    <!-- Item ID 抓取行 -->
+    <div class="fetch-row">
+      <div class="form-group" style="flex:1">
+        <label>Item ID（可选）</label>
+        <input type="text" id="item-id"
+               placeholder="eBay Item ID 或商品链接，回车自动抓取"
+               onkeydown="if(event.key==='Enter') fetchItem()" />
+      </div>
+      <button class="fetch-btn" onclick="fetchItem()">⬇ 抓取</button>
+    </div>
+    <div class="fetch-status" id="fetch-status"></div>
 
     <div class="form-row">
       <div class="form-group">
@@ -1110,6 +1156,98 @@ function reset() {
     document.getElementById(id).checked = false;
   });
   document.getElementById('material').value = '';
+}
+
+// ── 后端服务地址 ────────────────────────────────────────────────────────────
+const RISK_SERVICE = 'http://localhost:8002';
+
+// ── Feature 2: Item ID 抓取（填标题 + 重量）────────────────────────────────
+async function fetchItem() {
+  const raw = (document.getElementById('item-id').value || '').trim();
+  const status = document.getElementById('fetch-status');
+  if (!raw) return;
+
+  const m = raw.match(/(?:\/itm\/(?:[^\/]+\/)?)(\d{10,13})/);
+  const itemId = m ? m[1] : raw.replace(/\D/g, '');
+  if (!itemId || itemId.length < 10) {
+    status.style.color = '#c0392b';
+    status.textContent = '❌ 请输入有效 Item ID（10-13位数字）或 eBay 商品链接';
+    return;
+  }
+
+  status.style.color = '#666';
+  status.textContent = '⏳ 正在抓取 eBay 商品数据（约 5-10 秒）...';
+
+  try {
+    const r = await fetch(
+      `${RISK_SERVICE}/fetch-item?id=${encodeURIComponent(itemId)}`,
+      { signal: AbortSignal.timeout(30000) }
+    );
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.detail || 'HTTP ' + r.status);
+    }
+    const d = await r.json();
+    const filled = [];
+
+    if (d.title) {
+      document.getElementById('title').value = d.title;
+      filled.push('标题');
+    }
+    if (d.weight_lbs != null) {
+      document.getElementById('weight').value = d.weight_lbs;
+      filled.push(`重量(${d.weight_lbs} lbs)`);
+    }
+
+    const warn = d.error_fields && d.error_fields.length
+      ? `  ⚠ 未能获取：${d.error_fields.join('、')}`
+      : '';
+    status.style.color = filled.length ? '#15803d' : '#c0392b';
+    status.textContent = filled.length
+      ? `✅ 已填写：${filled.join(' + ')}${warn}`
+      : `❌ 未能获取有效数据${warn}`;
+  } catch (e) {
+    status.style.color = '#c0392b';
+    status.textContent = `❌ 抓取失败：${e.message}。请确认 risk_service.py 已启动（python risk_service.py）`;
+  }
+}
+
+// ── Feature 1: AI 估算区间（选择品类后自动触发）─────────────────────────────
+async function fetchAiDimensions() {
+  const sel = document.getElementById('category');
+  const panel = document.getElementById('ai-dim-panel');
+  const ranges = document.getElementById('ai-dim-ranges');
+  const note = document.getElementById('ai-dim-note');
+
+  if (!sel.value) { panel.style.display = 'none'; return; }
+
+  const catName = sel.options[sel.selectedIndex].text;
+  panel.style.display = 'block';
+  ranges.innerHTML = '<span style="color:#888;font-size:11px">⏳ AI 获取中...</span>';
+  note.textContent = '';
+
+  try {
+    const r = await fetch(`${RISK_SERVICE}/ai-dimensions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category_name: catName }),
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.detail || 'HTTP ' + r.status);
+    }
+    const d = await r.json();
+    ranges.innerHTML = `
+      <div class="ai-dim-item"><span>最长边 (in)</span><span>${d.l_min} – ${d.l_max}"</span></div>
+      <div class="ai-dim-item"><span>次长边 (in)</span><span>${d.w_min} – ${d.w_max}"</span></div>
+      <div class="ai-dim-item"><span>最短边 (in)</span><span>${d.h_min} – ${d.h_max}"</span></div>
+    `;
+    note.textContent = d.note ? `📝 ${d.note}` : '';
+  } catch (e) {
+    ranges.innerHTML = `<span style="color:#c0392b;font-size:11px">⚠ AI 不可用：${e.message}</span>`;
+    note.textContent = '请确认 risk_service.py 已启动';
+  }
 }
 </script>
 
