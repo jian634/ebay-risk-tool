@@ -1398,55 +1398,129 @@ function runBatch() {
 function renderGroupTable() {
   const wrap = document.getElementById('group-table-wrap');
 
-  // 只有数据中存在非空 groupId 才显示
   const hasGroupData = _batchResults.some(r => r.row.groupId);
   if (!hasGroupData) { wrap.innerHTML = ''; return; }
 
-  // 按 groupId 聚合
+  // 按 groupId 聚合，sellers 改为对象以存每个账号的刊登列表
   const groups = {};
   for (const { row, result } of _batchResults) {
     const gid = row.groupId || '__no_group__';
-    if (!groups[gid]) groups[gid] = { sellers: new Set(), listings: [] };
-    groups[gid].sellers.add(row.sellerId || '—');
+    if (!groups[gid]) groups[gid] = { sellers: {}, listings: [] };
+    const sid = row.sellerId || '—';
+    if (!groups[gid].sellers[sid]) groups[gid].sellers[sid] = [];
+    groups[gid].sellers[sid].push({ row, result });
     groups[gid].listings.push({ row, result });
   }
 
-  // 计算每组指标
   const rows = Object.entries(groups)
     .filter(([gid]) => gid !== '__no_group__')
     .map(([gid, g]) => {
-      const listings   = g.listings;
-      const scores     = listings.map(l => l.result.total);
-      const avgScore   = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-      const maxScore   = Math.max(...scores);
-      const highCnt    = listings.filter(l => l.result.total >= 60).length;
-      const cliffCnt   = listings.filter(l => l.result.cliff > 0).length;
-      const cliffSellers = new Set(
-        listings.filter(l => l.result.cliff > 0).map(l => l.row.sellerId)
-      ).size;
-      const highRate   = highCnt / listings.length;
-      const cliffRate  = cliffSellers / g.sellers.size;  // 有cliff的账号占比
+      const listings  = g.listings;
+      const sellerIds = Object.keys(g.sellers);
+      const scores    = listings.map(l => l.result.total);
+      const avgScore  = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+      const maxScore  = Math.max(...scores);
+      const highCnt   = listings.filter(l => l.result.total >= 60).length;
+      const cliffListings = listings.filter(l => l.result.cliff > 0);
+      const cliffCnt  = cliffListings.length;
+      const cliffSellers = new Set(cliffListings.map(l => l.row.sellerId)).size;
+      const highRate  = highCnt / listings.length;
+      const cliffRate = cliffSellers / sellerIds.length;
 
-      // 组风险分
       const groupScore = Math.min(100, Math.round(
-        maxScore * 0.40 +
-        highRate * 100 * 0.40 +
-        cliffRate * 100 * 0.20
+        maxScore * 0.40 + highRate * 100 * 0.40 + cliffRate * 100 * 0.20
       ));
 
-      let level, badge, rowBg;
-      if (groupScore >= 80) { level='block';  badge='🚫 极高风险'; rowBg='#fff0f0'; }
-      else if (groupScore >= 60) { level='high';   badge='🔴 高风险';  rowBg='#fff5ee'; }
-      else if (groupScore >= 30) { level='medium'; badge='🟡 中风险';  rowBg='#fffde7'; }
-      else                   { level='low';    badge='✅ 低风险';  rowBg='#f9f9f9'; }
+      let badge, rowBg;
+      if (groupScore >= 80)      { badge = '🚫 极高风险'; rowBg = '#fff0f0'; }
+      else if (groupScore >= 60) { badge = '🔴 高风险';   rowBg = '#fff5ee'; }
+      else if (groupScore >= 30) { badge = '🟡 中风险';   rowBg = '#fffde7'; }
+      else                       { badge = '✅ 低风险';   rowBg = '#f9f9f9'; }
 
-      // 跨账号cliff预警
-      const cliffWarn = (cliffSellers >= 2)
-        ? `<span style="color:#c62828;font-size:11px">⚠ ${cliffSellers}个账号均有cliff</span>`
-        : '';
+      const cliffWarn = cliffSellers >= 2
+        ? `<span style="color:#c62828;font-size:11px">⚠ ${cliffSellers}个账号均有cliff</span>` : '';
 
-      return { gid, sellers: g.sellers, listings, avgScore, maxScore,
-               highCnt, cliffCnt, cliffSellers, groupScore, badge, rowBg, cliffWarn };
+      // ── 每个账号的展开子行 ──────────────────────────────────────
+      const sellerRows = sellerIds.map(sid => {
+        const sl    = g.sellers[sid];
+        const sMax  = Math.max(...sl.map(l => l.result.total));
+        const sCliff = sl.filter(l => l.result.cliff > 0);
+
+        let sColor, sLevel;
+        if      (sMax >= 80) { sColor = '#c62828'; sLevel = 'BLOCK'; }
+        else if (sMax >= 60) { sColor = '#e65100'; sLevel = '高风险'; }
+        else if (sMax >= 30) { sColor = '#f9a825'; sLevel = '中风险'; }
+        else                 { sColor = '#388e3c'; sLevel = '低风险'; }
+
+        // 命中的 cliff 档位（去重）
+        const cliffTiers = [...new Set(sCliff.map(l => {
+          const w = l.row.weight;
+          if (w >= 148 && w <= 153) return '150lb档';
+          if (w >= 68  && w <= 73)  return '70lb档';
+          if (w >= 48  && w <= 53)  return '50lb档';
+          if (w >= 8   && w <= 12)  return '10lb档';
+          return w + 'lb';
+        }))].join(', ');
+
+        const isCover = sMax < 30 && groupScore >= 60;
+        const coverTag = isCover
+          ? ' <span style="background:#7b1fa2;color:#fff;border-radius:3px;padding:1px 5px;font-size:10px">掩护账号</span>' : '';
+
+        return `
+          <tr style="background:${isCover ? '#f3e5f5' : '#fafafa'}">
+            <td style="padding:5px 10px 5px 32px;font-size:12px;font-family:monospace">${sid}${coverTag}</td>
+            <td style="padding:5px 8px;font-size:12px;text-align:center">${sl.length}</td>
+            <td style="padding:5px 8px;font-size:12px;text-align:center;color:${sColor};font-weight:600">${sMax}</td>
+            <td style="padding:5px 8px;font-size:12px;text-align:center;color:${sColor}">${sLevel}</td>
+            <td style="padding:5px 8px;font-size:12px;text-align:center;color:#c62828">
+              ${sCliff.length > 0 ? '⚠ ' + cliffTiers : '<span style="color:#bbb">无</span>'}
+            </td>
+            <td style="padding:5px 12px">
+              <div style="background:#e0e0e0;border-radius:3px;height:8px;width:90px;display:inline-block;vertical-align:middle">
+                <div style="background:${sColor};height:8px;border-radius:3px;width:${sMax}%"></div>
+              </div>
+            </td>
+          </tr>`;
+      }).join('');
+
+      // 模式判断
+      const cleanCnt = sellerIds.filter(sid =>
+        Math.max(...g.sellers[sid].map(l => l.result.total)) < 30).length;
+      const highSellerCnt = sellerIds.filter(sid =>
+        Math.max(...g.sellers[sid].map(l => l.result.total)) >= 60).length;
+
+      let patternHtml = '';
+      if (cleanCnt > 0 && highSellerCnt >= 2) {
+        patternHtml = `<div style="padding:6px 12px 8px 32px;font-size:12px;color:#7b1fa2;font-weight:600">
+          → 判断：${highSellerCnt} 个主犯账号 + ${cleanCnt} 个干净掩护账号（高度可疑）</div>`;
+      } else if (cliffSellers >= 2 && highSellerCnt >= 2) {
+        patternHtml = `<div style="padding:6px 12px 8px 32px;font-size:12px;color:#c62828;font-weight:600">
+          → 判断：全组协同欺诈，${cliffSellers} 个账号均命中 cliff</div>`;
+      } else if (highSellerCnt === 1 && sellerIds.length > 1) {
+        patternHtml = `<div style="padding:6px 12px 8px 32px;font-size:12px;color:#e65100">
+          → 判断：单一账号异常，其余账号暂无明显风险</div>`;
+      }
+
+      const detailHtml = `
+        <tr id="group-detail-${gid}" style="display:none">
+          <td colspan="8" style="padding:0;border-bottom:2px solid #3665f3;background:#f5f6fa">
+            <table style="width:100%;border-collapse:collapse">
+              <thead><tr style="background:#e8eaf6">
+                <th style="padding:5px 10px 5px 32px;font-size:11px;color:#555;text-align:left;font-weight:600">账号 ID</th>
+                <th style="padding:5px 8px;font-size:11px;color:#555;text-align:center;font-weight:600">刊登数</th>
+                <th style="padding:5px 8px;font-size:11px;color:#555;text-align:center;font-weight:600">最高分</th>
+                <th style="padding:5px 8px;font-size:11px;color:#555;text-align:center;font-weight:600">判级</th>
+                <th style="padding:5px 8px;font-size:11px;color:#555;text-align:center;font-weight:600">Cliff 档位</th>
+                <th style="padding:5px 12px;font-size:11px;color:#555;font-weight:600">分数条</th>
+              </tr></thead>
+              <tbody>${sellerRows}</tbody>
+            </table>
+            ${patternHtml}
+          </td>
+        </tr>`;
+
+      return { gid, sellerIds, listings, avgScore, maxScore,
+               highCnt, cliffCnt, cliffSellers, groupScore, badge, rowBg, cliffWarn, detailHtml };
     })
     .sort((a, b) => b.groupScore - a.groupScore);
 
@@ -1456,23 +1530,26 @@ function renderGroupTable() {
   const tdStyle = 'padding:7px 10px;font-size:12px;text-align:center;border-bottom:1px solid #eee';
 
   const tableRows = rows.map(r => `
-    <tr style="background:${r.rowBg}">
-      <td style="${tdStyle};text-align:left;font-weight:600">${r.gid}</td>
-      <td style="${tdStyle}">${r.sellers.size}</td>
+    <tr style="background:${r.rowBg};cursor:pointer" onclick="toggleGroupDetail('${r.gid}')">
+      <td style="${tdStyle};text-align:left;font-weight:600">
+        <span id="group-arrow-${r.gid}" style="display:inline-block;margin-right:6px;font-size:10px;transition:transform .2s">▶</span>${r.gid}
+      </td>
+      <td style="${tdStyle}">${r.sellerIds.length}</td>
       <td style="${tdStyle}">${r.listings.length}</td>
       <td style="${tdStyle};color:${r.highCnt>0?'#c62828':'#555'};font-weight:${r.highCnt>0?'700':'400'}">${r.highCnt}</td>
       <td style="${tdStyle}">${r.cliffCnt} 条 / ${r.cliffSellers} 账号 ${r.cliffWarn}</td>
       <td style="${tdStyle}">${r.avgScore}</td>
       <td style="${tdStyle};font-weight:700;font-size:14px">${r.groupScore}</td>
       <td style="${tdStyle};font-weight:600">${r.badge}</td>
-    </tr>`).join('');
+    </tr>
+    ${r.detailHtml}`).join('');
 
   wrap.innerHTML = `
     <div style="margin:16px 0 8px;padding:14px 16px 0;background:#fff;border-radius:8px;border:1px solid #dde;box-shadow:0 1px 4px rgba(0,0,0,.06)">
       <div style="font-size:14px;font-weight:700;color:#3665f3;margin-bottom:10px">
         👥 组团风险聚合
         <span style="font-weight:400;color:#888;font-size:12px;margin-left:8px">
-          共 ${rows.length} 个组 · 同组多账号均命中cliff时为强欺诈信号
+          共 ${rows.length} 个组 · 点击行展开账号分布
         </span>
       </div>
       <div style="overflow-x:auto">
@@ -1491,9 +1568,18 @@ function renderGroupTable() {
         </table>
       </div>
       <div style="font-size:11px;color:#aaa;padding:8px 0 10px">
-        组风险分 = max单账号分×40% + 高风险刊登占比×40% + 有cliff账号占比×20%
+        组风险分 = max单账号分×40% + 高风险刊登占比×40% + 有cliff账号占比×20% · 点击行展开账号详情
       </div>
     </div>`;
+}
+
+function toggleGroupDetail(gid) {
+  const row   = document.getElementById('group-detail-' + gid);
+  const arrow = document.getElementById('group-arrow-' + gid);
+  if (!row) return;
+  const open = row.style.display !== 'none';
+  row.style.display = open ? 'none' : 'table-row';
+  if (arrow) arrow.style.transform = open ? '' : 'rotate(90deg)';
 }
 
 async function logBatchFlagged() {
