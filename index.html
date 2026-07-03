@@ -1612,7 +1612,7 @@ function changePage(dir) {
 }
 
 // ── 点击行 → 跳到单条详细报告 ───────────────────────────────────────────────
-function viewBatchDetail(idx) {
+async function viewBatchDetail(idx) {
   const { row, result } = _displayResults[idx];
   // 填充表单
   document.getElementById('category').value = row.categoryId;
@@ -1627,7 +1627,8 @@ function viewBatchDetail(idx) {
     document.getElementById(id).checked = false;
   });
   document.getElementById('material').value = '';
-  // 触发单条分析并滚动到顶部
+  // 先获取 AI 估算区间，再触发分析
+  await fetchAiDimensions();
   analyze();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
