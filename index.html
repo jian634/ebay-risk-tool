@@ -465,7 +465,8 @@
 
     <div class="batch-format">
       📋 CSV格式（第一行为表头，顺序固定）：<br>
-      <code>item_id, seller_id, category_id, title, weight_lbs, price, dim_l, dim_w, dim_h</code><br>
+      <code>item_id, seller_id, group_id, category_id, title, weight_lbs, price, dim_l, dim_w, dim_h</code><br>
+      <code>group_id</code> 填促销报名组ID（同组账号填相同值；无则留空，组团分析跳过）&nbsp;·&nbsp;
       category_id 填 leaf_categ_id（如 <code>c175758</code>）或命名key（如 <code>beds</code>）&nbsp;·&nbsp;
       dim三边可留空（0或空）&nbsp;·&nbsp;price可留空&nbsp;·&nbsp;weight_lbs 必填
     </div>
@@ -485,6 +486,7 @@
     </button>
 
     <div id="batch-progress"></div>
+    <div id="group-table-wrap"></div>
     <div id="batch-table-wrap"></div>
   </div>
 </div>
@@ -1303,18 +1305,24 @@ function parseCSV(text) {
   const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
   const idx = k => headers.indexOf(k);
 
+  // group_id 可选列，兼容新旧两种格式
+  const hasGroup = headers.includes('group_id');
+
   return lines.slice(1).map(line => {
     const cols = line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+    // 有group_id列时列顺序后移一位
+    const off = hasGroup ? 1 : 0;
     return {
       itemId:     cols[idx('item_id')]     || cols[0] || '',
       sellerId:   cols[idx('seller_id')]   || cols[1] || '',
-      categoryId: cols[idx('category_id')] || cols[2] || '',
-      title:      cols[idx('title')]       || cols[3] || '',
-      weight:     cols[idx('weight_lbs')]  || cols[4] || '',
-      price:      cols[idx('price')]       || cols[5] || '',
-      d1:         cols[idx('dim_l')]       || cols[6] || '',
-      d2:         cols[idx('dim_w')]       || cols[7] || '',
-      d3:         cols[idx('dim_h')]       || cols[8] || '',
+      groupId:    hasGroup ? (cols[idx('group_id')] || cols[2] || '') : '',
+      categoryId: cols[idx('category_id')] || cols[2 + off] || '',
+      title:      cols[idx('title')]       || cols[3 + off] || '',
+      weight:     cols[idx('weight_lbs')]  || cols[4 + off] || '',
+      price:      cols[idx('price')]       || cols[5 + off] || '',
+      d1:         cols[idx('dim_l')]       || cols[6 + off] || '',
+      d2:         cols[idx('dim_w')]       || cols[7 + off] || '',
+      d3:         cols[idx('dim_h')]       || cols[8 + off] || '',
     };
   }).filter(r => r.weight && parseFloat(r.weight) > 0);
 }
@@ -1377,12 +1385,115 @@ function runBatch() {
     `<span style="color:#888">低风险 ${cntLow}（已过滤，见导出CSV）</span>`;
 
   _currentPage = 0;
+  renderGroupTable();
   renderBatchTable();
   btn.textContent = '⚡ 重新分析';
   btn.disabled = false;
 
   // 批量写入中/高/block 到桌面 Excel
   logBatchFlagged();
+}
+
+// ── 组团风险聚合视图 ──────────────────────────────────────────────────────────
+function renderGroupTable() {
+  const wrap = document.getElementById('group-table-wrap');
+
+  // 只有数据中存在非空 groupId 才显示
+  const hasGroupData = _batchResults.some(r => r.row.groupId);
+  if (!hasGroupData) { wrap.innerHTML = ''; return; }
+
+  // 按 groupId 聚合
+  const groups = {};
+  for (const { row, result } of _batchResults) {
+    const gid = row.groupId || '__no_group__';
+    if (!groups[gid]) groups[gid] = { sellers: new Set(), listings: [] };
+    groups[gid].sellers.add(row.sellerId || '—');
+    groups[gid].listings.push({ row, result });
+  }
+
+  // 计算每组指标
+  const rows = Object.entries(groups)
+    .filter(([gid]) => gid !== '__no_group__')
+    .map(([gid, g]) => {
+      const listings   = g.listings;
+      const scores     = listings.map(l => l.result.total);
+      const avgScore   = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
+      const maxScore   = Math.max(...scores);
+      const highCnt    = listings.filter(l => l.result.total >= 60).length;
+      const cliffCnt   = listings.filter(l => l.result.cliff > 0).length;
+      const cliffSellers = new Set(
+        listings.filter(l => l.result.cliff > 0).map(l => l.row.sellerId)
+      ).size;
+      const highRate   = highCnt / listings.length;
+      const cliffRate  = cliffSellers / g.sellers.size;  // 有cliff的账号占比
+
+      // 组风险分
+      const groupScore = Math.min(100, Math.round(
+        maxScore * 0.40 +
+        highRate * 100 * 0.40 +
+        cliffRate * 100 * 0.20
+      ));
+
+      let level, badge, rowBg;
+      if (groupScore >= 80) { level='block';  badge='🚫 极高风险'; rowBg='#fff0f0'; }
+      else if (groupScore >= 60) { level='high';   badge='🔴 高风险';  rowBg='#fff5ee'; }
+      else if (groupScore >= 30) { level='medium'; badge='🟡 中风险';  rowBg='#fffde7'; }
+      else                   { level='low';    badge='✅ 低风险';  rowBg='#f9f9f9'; }
+
+      // 跨账号cliff预警
+      const cliffWarn = (cliffSellers >= 2)
+        ? `<span style="color:#c62828;font-size:11px">⚠ ${cliffSellers}个账号均有cliff</span>`
+        : '';
+
+      return { gid, sellers: g.sellers, listings, avgScore, maxScore,
+               highCnt, cliffCnt, cliffSellers, groupScore, badge, rowBg, cliffWarn };
+    })
+    .sort((a, b) => b.groupScore - a.groupScore);
+
+  if (!rows.length) { wrap.innerHTML = ''; return; }
+
+  const thStyle = 'padding:8px 10px;background:#3665f3;color:#fff;font-size:12px;text-align:center;white-space:nowrap';
+  const tdStyle = 'padding:7px 10px;font-size:12px;text-align:center;border-bottom:1px solid #eee';
+
+  const tableRows = rows.map(r => `
+    <tr style="background:${r.rowBg}">
+      <td style="${tdStyle};text-align:left;font-weight:600">${r.gid}</td>
+      <td style="${tdStyle}">${r.sellers.size}</td>
+      <td style="${tdStyle}">${r.listings.length}</td>
+      <td style="${tdStyle};color:${r.highCnt>0?'#c62828':'#555'};font-weight:${r.highCnt>0?'700':'400'}">${r.highCnt}</td>
+      <td style="${tdStyle}">${r.cliffCnt} 条 / ${r.cliffSellers} 账号 ${r.cliffWarn}</td>
+      <td style="${tdStyle}">${r.avgScore}</td>
+      <td style="${tdStyle};font-weight:700;font-size:14px">${r.groupScore}</td>
+      <td style="${tdStyle};font-weight:600">${r.badge}</td>
+    </tr>`).join('');
+
+  wrap.innerHTML = `
+    <div style="margin:16px 0 8px;padding:14px 16px 0;background:#fff;border-radius:8px;border:1px solid #dde;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+      <div style="font-size:14px;font-weight:700;color:#3665f3;margin-bottom:10px">
+        👥 组团风险聚合
+        <span style="font-weight:400;color:#888;font-size:12px;margin-left:8px">
+          共 ${rows.length} 个组 · 同组多账号均命中cliff时为强欺诈信号
+        </span>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr>
+            <th style="${thStyle};text-align:left">Group ID</th>
+            <th style="${thStyle}">账号数</th>
+            <th style="${thStyle}">刊登数</th>
+            <th style="${thStyle}">高风险刊登</th>
+            <th style="${thStyle}">Cliff命中</th>
+            <th style="${thStyle}">平均分</th>
+            <th style="${thStyle}">组风险分</th>
+            <th style="${thStyle}">组判级</th>
+          </tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>
+      <div style="font-size:11px;color:#aaa;padding:8px 0 10px">
+        组风险分 = max单账号分×40% + 高风险刊登占比×40% + 有cliff账号占比×20%
+      </div>
+    </div>`;
 }
 
 async function logBatchFlagged() {
