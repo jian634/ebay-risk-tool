@@ -182,15 +182,6 @@
     margin-top: 14px; padding-top: 12px; border-top: 1px solid #f0f0f0; flex-wrap: wrap;
   }
   .fb-label { font-size: 12px; color: #aaa; }
-  .fb-btn {
-    padding: 5px 14px; border-radius: 5px; cursor: pointer;
-    font-size: 12px; font-weight: 600; border: 1px solid;
-    transition: opacity .15s;
-  }
-  .fb-btn:hover  { opacity: .8; }
-  .fb-btn:disabled { opacity: .4; cursor: default; }
-  .fb-confirm { background: #e8f5e9; color: #2e7d32; border-color: #c8e6c9; }
-  .fb-dismiss { background: #f5f5f5; color: #666;    border-color: #ddd; }
 
   /* ── 模块卡左侧彩色指示条 ── */
   .module-card { border-left: 3px solid #eee; }
@@ -499,12 +490,6 @@
       <div class="insight-card-bd">
         <div id="ai-explain-panel" class="insight-explain"></div>
         <div id="ai-title-badge" class="insight-title-chk"></div>
-        <div class="insight-feedback">
-          <span class="fb-label">判断准确吗？</span>
-          <button class="fb-btn fb-confirm" onclick="submitFeedback('confirmed')">✅ 确认风险</button>
-          <button class="fb-btn fb-dismiss" onclick="submitFeedback('dismissed')">❌ 误判</button>
-          <span id="feedback-status" style="font-size:12px;color:#888"></span>
-        </div>
       </div>
     </div>
 
@@ -1334,20 +1319,11 @@ function analyze() {
     document.getElementById('log-notice').style.display = 'none';
   }
 
-  // ── 存储本次分析数据（供反馈使用）────────────────────────────────────
-  _currentAnalysis = {
-    item_id:     document.getElementById('item-id').value.trim(),
-    category_id: catKey, title, weight_lbs: weight, price, score: total, verdict: level,
-  };
-
   // ── 重置综合洞察卡 ────────────────────────────────────────────────
   const insightWrap = document.getElementById('insight-wrap');
   insightWrap.style.display = 'none';
   document.getElementById('ai-explain-panel').innerHTML = '<span style="font-size:12px;color:#aaa">⏳ 风控说明生成中...</span>';
   document.getElementById('ai-title-badge').innerHTML   = '<span style="font-size:12px;color:#aaa">⏳ 标题核查中...</span>';
-  document.getElementById('feedback-status').textContent = '';
-  document.querySelectorAll('.fb-btn').forEach(b => b.disabled = false);
-
   // ── 异步智能增强（不阻塞页面展示）──────────────────────────────────
   const sel = document.getElementById('category');
   const catName = sel.options[sel.selectedIndex]?.text || catKey;
@@ -1357,8 +1333,6 @@ function analyze() {
     m1.score, m2.score, m3.score, m4.score, cliffBonus, sizeContradictionBonus, densityCheck.score);
 }
 
-let _currentAnalysis = {};
-
 function reset() {
   document.getElementById('result').style.display = 'none';
   document.getElementById('form-card').style.display = 'block';
@@ -1367,7 +1341,6 @@ function reset() {
     document.getElementById(id).checked = false;
   });
   document.getElementById('material').value = '';
-  _currentAnalysis = {};
 }
 
 // ── AI 标题核查 ────────────────────────────────────────────────────────────────
@@ -1429,25 +1402,6 @@ async function fetchAiExplain(title, catName, weight, price, score, verdict, m1,
 }
 
 // ── 反馈提交 ──────────────────────────────────────────────────────────────────
-async function submitFeedback(feedbackType) {
-  const status = document.getElementById('feedback-status');
-  status.textContent = '提交中...';
-  try {
-    const res = await fetch('http://localhost:8002/feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ..._currentAnalysis, feedback: feedbackType }),
-    });
-    if (!res.ok) throw new Error(res.status);
-    const label = feedbackType === 'confirmed' ? '✅ 已记录为真阳' : '❌ 已记录为误判';
-    status.textContent = label;
-    status.style.color = feedbackType === 'confirmed' ? '#2e7d32' : '#757575';
-    document.querySelectorAll('#feedback-row button').forEach(b => b.disabled = true);
-  } catch {
-    status.textContent = '记录失败（需启动 risk_service）';
-    status.style.color = '#c62828';
-  }
-}
 
 // ── 后端服务地址 ────────────────────────────────────────────────────────────
 const RISK_SERVICE = 'http://localhost:8002';
