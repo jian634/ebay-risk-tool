@@ -537,6 +537,7 @@
     </button>
 
     <div id="batch-progress"></div>
+    <div id="snapshot-notice" style="display:none;margin-top:8px;padding:9px 14px;background:#f1f8e9;border-left:3px solid #7cb342;border-radius:5px;font-size:12px;color:#444"></div>
     <div id="group-table-wrap"></div>
     <div id="batch-table-wrap"></div>
   </div>
@@ -1640,6 +1641,48 @@ function runBatch() {
 
   // 批量写入中/高/block 到桌面 Excel
   logBatchFlagged();
+
+  // 自动对中高风险刊登存档快照
+  snapshotFlagged();
+}
+
+// ── 刊登快照存档 ──────────────────────────────────────────────────────────────
+async function snapshotFlagged() {
+  const flagged = _batchResults
+    .filter(({ result }) => ['medium', 'high', 'block'].includes(result.badge))
+    .map(({ row, result }) => ({
+      item_id: row.itemId,
+      verdict: result.badge,
+      score: result.total,
+    }))
+    .filter(x => x.item_id);   // 跳过无 item_id 的行
+
+  if (!flagged.length) return;
+
+  const notice = document.getElementById('snapshot-notice');
+  if (notice) {
+    notice.style.display = 'block';
+    notice.textContent = `⏳ 正在为 ${flagged.length} 条中高风险刊登存档快照（标题+图片）...`;
+  }
+
+  try {
+    const res = await fetch(`${RISK_SERVICE}/snapshot-batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(flagged),
+    });
+    if (!res.ok) throw new Error('服务未响应');
+    const d = await res.json();
+    if (notice) {
+      notice.textContent =
+        `✅ 快照已存档：${d.ok} 条新增，${d.skipped} 条已有记录，保存至桌面 ebay_snapshots 文件夹`;
+    }
+  } catch {
+    if (notice) {
+      notice.textContent = '⚠ 快照存档跳过（需启动 risk_service.py）';
+      notice.style.color = '#999';
+    }
+  }
 }
 
 // ── 组团风险聚合视图 ──────────────────────────────────────────────────────────
