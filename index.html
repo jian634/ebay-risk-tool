@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>eBay Heavy Goods Risk Detection</title>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: Arial, sans-serif; background: #f5f6fa; color: #222; }
@@ -518,8 +519,8 @@
          ondragover="event.preventDefault();this.classList.add('drag-over')"
          ondragleave="this.classList.remove('drag-over')"
          ondrop="event.preventDefault();this.classList.remove('drag-over');handleBatchFile(event.dataTransfer.files[0])">
-      📂 点击上传 CSV 或拖拽到此处
-      <input type="file" id="batch-file-input" accept=".csv" style="display:none"
+      📂 点击上传 CSV / Excel 或拖拽到此处
+      <input type="file" id="batch-file-input" accept=".csv,.xlsx,.xls" style="display:none"
              onchange="handleBatchFile(this.files[0])">
     </div>
 
@@ -1486,21 +1487,67 @@ function parseCSV(text) {
 // ── 文件读取 ─────────────────────────────────────────────────────────────────
 let _batchRows = [];
 
+function _rowsFromSheet(ws) {
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  if (data.length < 2) return [];
+  const headers = data[0].map(h => String(h).trim().toLowerCase());
+  const idx = k => headers.indexOf(k);
+  const hasGroup = headers.includes('group_id');
+  return data.slice(1).map(cols => {
+    const off = hasGroup ? 1 : 0;
+    const g = k => {
+      const i = idx(k);
+      return i >= 0 ? String(cols[i] ?? '').trim() : '';
+    };
+    return {
+      itemId:     g('item_id')     || String(cols[0] ?? '').trim(),
+      sellerId:   g('seller_id')   || String(cols[1] ?? '').trim(),
+      groupId:    hasGroup ? (g('group_id') || String(cols[2] ?? '').trim()) : '',
+      categoryId: g('category_id') || String(cols[2 + off] ?? '').trim(),
+      title:      g('title')       || String(cols[3 + off] ?? '').trim(),
+      weight:     g('weight_lbs')  || String(cols[4 + off] ?? '').trim(),
+      price:      g('price')       || String(cols[5 + off] ?? '').trim(),
+      d1:         g('dim_l')       || String(cols[6 + off] ?? '').trim(),
+      d2:         g('dim_w')       || String(cols[7 + off] ?? '').trim(),
+      d3:         g('dim_h')       || String(cols[8 + off] ?? '').trim(),
+    };
+  }).filter(r => r.weight && parseFloat(r.weight) > 0);
+}
+
 function handleBatchFile(file) {
   if (!file) return;
   const drop = document.getElementById('batch-drop');
-  const reader = new FileReader();
-  reader.onload = e => {
-    _batchRows = parseCSV(e.target.result);
+  const ext = file.name.split('.').pop().toLowerCase();
+
+  const finish = rows => {
+    _batchRows = rows;
     if (_batchRows.length === 0) {
-      drop.textContent = '❌ 未解析到有效数据，请检查CSV格式';
+      drop.textContent = '❌ 未解析到有效数据，请检查文件格式';
       document.getElementById('batch-run-btn').disabled = true;
     } else {
       drop.innerHTML = `✅ <strong>${file.name}</strong> — 共 ${_batchRows.length} 条，点击「开始批量分析」`;
       document.getElementById('batch-run-btn').disabled = false;
     }
   };
-  reader.readAsText(file, 'UTF-8');
+
+  if (ext === 'xlsx' || ext === 'xls') {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        finish(_rowsFromSheet(ws));
+      } catch (err) {
+        drop.textContent = `❌ Excel 解析失败: ${err.message}`;
+        document.getElementById('batch-run-btn').disabled = true;
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  } else {
+    const reader = new FileReader();
+    reader.onload = e => finish(parseCSV(e.target.result));
+    reader.readAsText(file, 'UTF-8');
+  }
 }
 
 // ── 主批量分析 ───────────────────────────────────────────────────────────────
@@ -1830,7 +1877,8 @@ function renderBatchTable() {
   const pagination = `<div style="display:flex;align-items:center;gap:4px;margin:10px 0;font-size:13px;color:#555">
     ${prevBtn}<span>${pageInfo}</span>${nextBtn}
     <span style="margin-left:auto">
-      <button class="export-btn" onclick="exportBatchCSV()">📥 导出全部结果CSV</button>
+      <button class="export-btn" onclick="exportBatchCSV()">📥 导出CSV</button>
+      <button class="export-btn" onclick="exportBatchExcel()" style="margin-left:6px;background:#1b7c3d">📊 导出Excel</button>
     </span>
   </div>`;
 
@@ -1900,6 +1948,49 @@ function exportBatchCSV() {
   a.href = URL.createObjectURL(blob);
   a.download = `risk_batch_${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
+}
+
+// ── 导出Excel ─────────────────────────────────────────────────────────────────
+function exportBatchExcel() {
+  const headers = ['item_id','seller_id','title','category','weight_lbs','price',
+                   'total_score','level','M1','M2','M3','M4','cliff','size_contra','density','flags'];
+  const rows = _batchResults.map(({ row, result }) => {
+    const flags = [];
+    if (result.cliff > 0)        flags.push(`Cliff+${result.cliff}`);
+    if (result.sizeContra > 0)   flags.push('尺寸矛盾+30');
+    if (result.densityScore > 0) flags.push(`密度+${result.densityScore}`);
+    const catName = result.catData ? result.catData.name : row.categoryId;
+    return [
+      row.itemId, row.sellerId, row.title, catName,
+      parseFloat(row.weight) || 0, parseFloat(row.price) || 0,
+      result.total, result.badge,
+      result.m1.score, result.m2.score, result.m3.score, result.m4.score,
+      result.cliff, result.sizeContra, result.densityScore,
+      flags.join('; ')
+    ];
+  });
+
+  const wsData = [headers, ...rows];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+  // 列宽
+  ws['!cols'] = [
+    {wch:14},{wch:14},{wch:45},{wch:20},{wch:10},{wch:8},
+    {wch:8},{wch:8},{wch:6},{wch:6},{wch:6},{wch:6},{wch:6},{wch:8},{wch:6},{wch:20}
+  ];
+
+  // 级别列着色（col H = index 7, rows 2+）
+  const levelColor = { 'low':'C8E6C9','medium':'FFF9C4','high':'FFE0B2','block':'FFCDD2' };
+  rows.forEach((r, i) => {
+    const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 7 });
+    const fill = levelColor[r[7]] || 'FFFFFF';
+    if (!ws[cellRef]) ws[cellRef] = { v: r[7], t: 's' };
+    ws[cellRef].s = { fill: { fgColor: { rgb: fill } } };
+  });
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '风险分析结果');
+  XLSX.writeFile(wb, `risk_batch_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
 // ── Feature 2: Item ID 抓取（填标题 + 重量）────────────────────────────────
