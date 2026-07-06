@@ -449,6 +449,19 @@
     <div class="card">
       <h2>各模块评分明细</h2>
       <div class="module-scores" id="module-scores"></div>
+      <!-- AI标题核查徽章，analyze后异步填充 -->
+      <div id="ai-title-badge" style="margin-top:10px"></div>
+    </div>
+
+    <!-- AI异常解释面板 -->
+    <div id="ai-explain-panel" style="display:none;margin:8px 0;padding:14px 18px;background:#f0f4ff;border-left:4px solid #3665f3;border-radius:6px;font-size:13px;color:#333;line-height:1.6"></div>
+
+    <!-- 反馈按钮 -->
+    <div id="feedback-row" style="display:none;margin:10px 0;gap:10px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:12px;color:#888">这条判断准确吗？</span>
+      <button onclick="submitFeedback('confirmed')" style="padding:6px 16px;background:#2e7d32;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px">✅ 确认风险</button>
+      <button onclick="submitFeedback('dismissed')" style="padding:6px 16px;background:#757575;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:12px">❌ 误判</button>
+      <span id="feedback-status" style="font-size:12px;color:#888"></span>
     </div>
 
     <div id="log-notice" style="display:none;margin-top:12px;padding:10px 14px;border-radius:6px;font-size:13px"></div>
@@ -1236,7 +1249,28 @@ function analyze() {
   } else {
     document.getElementById('log-notice').style.display = 'none';
   }
+
+  // ── 存储本次分析数据（供反馈使用）────────────────────────────────────
+  _currentAnalysis = {
+    item_id:     document.getElementById('item-id').value.trim(),
+    category_id: catKey, title, weight_lbs: weight, price, score: total, verdict: level,
+  };
+
+  // ── 重置 AI 增强面板 ──────────────────────────────────────────────
+  document.getElementById('ai-title-badge').innerHTML = '<span style="font-size:11px;color:#aaa">⏳ AI标题核查中...</span>';
+  document.getElementById('ai-explain-panel').style.display = 'none';
+  document.getElementById('feedback-row').style.display = 'none';
+  document.getElementById('feedback-status').textContent = '';
+
+  // ── 异步调 AI（不阻塞页面展示）──────────────────────────────────────
+  const sel = document.getElementById('category');
+  const catName = sel.options[sel.selectedIndex]?.text || catKey;
+  fetchAiTitleCheck(title, catName, weight);
+  fetchAiExplain(title, catName, weight, price, total, level,
+    m1.score, m2.score, m3.score, m4.score, cliffBonus, sizeContradictionBonus, densityCheck.score);
 }
+
+let _currentAnalysis = {};
 
 function reset() {
   document.getElementById('result').style.display = 'none';
@@ -1245,6 +1279,91 @@ function reset() {
     document.getElementById(id).checked = false;
   });
   document.getElementById('material').value = '';
+  _currentAnalysis = {};
+}
+
+// ── AI 标题核查 ────────────────────────────────────────────────────────────────
+async function fetchAiTitleCheck(title, catName, weight) {
+  const badge = document.getElementById('ai-title-badge');
+  if (!title || !catName) { badge.innerHTML = ''; return; }
+  try {
+    const res = await fetch('http://localhost:8002/ai-title-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, category_name: catName, weight_lbs: weight }),
+    });
+    if (!res.ok) throw new Error(res.status);
+    const d = await res.json();
+    const pct = Math.round((d.confidence || 0) * 100);
+    const kws = (d.keywords || []).map(k =>
+      `<span style="background:#fff3e0;color:#e65100;border-radius:3px;padding:1px 5px;margin:0 2px;font-size:11px">${k}</span>`
+    ).join('');
+    if (d.suspicious) {
+      badge.innerHTML = `
+        <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;background:#fff3e0;border-left:3px solid #e65100;border-radius:5px">
+          <span style="font-size:16px;flex-shrink:0">🤖</span>
+          <div>
+            <span style="font-weight:600;color:#e65100;font-size:12px">AI标题核查：可疑（置信度${pct}%）</span>
+            <div style="color:#555;font-size:12px;margin-top:2px">${d.reason || ''} ${kws}</div>
+          </div>
+        </div>`;
+    } else {
+      badge.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#f1f8e9;border-left:3px solid #7cb342;border-radius:5px">
+          <span style="font-size:14px">🤖</span>
+          <span style="font-size:12px;color:#558b2f">AI标题核查：未见明显异常（置信度${pct}%）</span>
+        </div>`;
+    }
+  } catch {
+    badge.innerHTML = '<span style="font-size:11px;color:#bbb">AI标题核查不可用（需启动 risk_service）</span>';
+  }
+}
+
+// ── AI 异常解释 ────────────────────────────────────────────────────────────────
+async function fetchAiExplain(title, catName, weight, price, score, verdict, m1, m2, m3, m4, cliff, sizeContra, density) {
+  const panel = document.getElementById('ai-explain-panel');
+  const fbRow = document.getElementById('feedback-row');
+  try {
+    const res = await fetch('http://localhost:8002/ai-explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title, category_name: catName, weight_lbs: weight, price,
+        score, verdict, m1, m2, m3, m4, cliff,
+        size_contra: sizeContra, density,
+      }),
+    });
+    if (!res.ok) throw new Error(res.status);
+    const d = await res.json();
+    panel.style.display = 'block';
+    panel.innerHTML = `<span style="font-size:13px;font-weight:600;color:#3665f3;margin-right:8px">🤖 AI风控说明</span>${d.explanation || ''}`;
+  } catch {
+    // AI 不可用时不显示面板
+  } finally {
+    // 无论 AI 是否成功，显示反馈按钮
+    fbRow.style.display = 'flex';
+  }
+}
+
+// ── 反馈提交 ──────────────────────────────────────────────────────────────────
+async function submitFeedback(feedbackType) {
+  const status = document.getElementById('feedback-status');
+  status.textContent = '提交中...';
+  try {
+    const res = await fetch('http://localhost:8002/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ..._currentAnalysis, feedback: feedbackType }),
+    });
+    if (!res.ok) throw new Error(res.status);
+    const label = feedbackType === 'confirmed' ? '✅ 已记录为真阳' : '❌ 已记录为误判';
+    status.textContent = label;
+    status.style.color = feedbackType === 'confirmed' ? '#2e7d32' : '#757575';
+    document.querySelectorAll('#feedback-row button').forEach(b => b.disabled = true);
+  } catch {
+    status.textContent = '记录失败（需启动 risk_service）';
+    status.style.color = '#c62828';
+  }
 }
 
 // ── 后端服务地址 ────────────────────────────────────────────────────────────
