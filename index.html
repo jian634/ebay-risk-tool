@@ -800,8 +800,8 @@ function scoreTitleModule(title) {
 
 // ─── MODULE 3: PRICE INTELLIGENCE ─────────────────────────────────────────
 function scorePriceModule(price, weight, catData) {
-  if (!price) return { score: 0, reasons: '未填写价格，跳过（不影响评分）' };
-  if (!weight || weight === 0) return { score: 0, reasons: '未填写重量，跳过（不影响评分）' };
+  if (!price) return { score: 0, reasons: '未填写价格，跳过（不影响评分）', vizHtml: '' };
+  if (!weight || weight === 0) return { score: 0, reasons: '未填写重量，跳过（不影响评分）', vizHtml: '' };
 
   const ppl = price / weight;
   const { pricePerLbMin, pricePerLbMax } = catData;
@@ -810,10 +810,10 @@ function scorePriceModule(price, weight, catData) {
 
   if (ppl < pricePerLbMin * 0.4) {
     score = 90;
-    reasons = `极度价格倒挂：$${ppl.toFixed(1)}/磅，远低于该品类正常区间 $${pricePerLbMin}-$${pricePerLbMax}/磅`;
+    reasons = `极度价格倒挂：$${ppl.toFixed(1)}/磅，远低于该品类正常区间 $${pricePerLbMin}–$${pricePerLbMax}/磅`;
   } else if (ppl < pricePerLbMin * 0.7) {
     score = 70;
-    reasons = `价格偏低：$${ppl.toFixed(1)}/磅，低于该品类正常区间 $${pricePerLbMin}-$${pricePerLbMax}/磅`;
+    reasons = `价格偏低：$${ppl.toFixed(1)}/磅，低于该品类正常区间 $${pricePerLbMin}–$${pricePerLbMax}/磅`;
   } else if (ppl <= pricePerLbMax * 1.5) {
     score = 15;
     reasons = `价格合理：$${ppl.toFixed(1)}/磅，在该品类正常区间内`;
@@ -823,18 +823,57 @@ function scorePriceModule(price, weight, catData) {
   }
 
   // 动态检测：价格是否恰好在当前层级的最大补贴点附近
-  // 各档最大补贴触发价：20%→$600, 40%→$300, 60%→$200, 80%→$150
   const { tier: currentTier } = getTier(weight);
   if (currentTier && price > 0) {
     const maxRewardPrice = 120 / currentTier.pctNum;
     const deviation = Math.abs(price - maxRewardPrice) / maxRewardPrice;
     if (deviation < 0.12) {
       score = Math.min(score + 25, 100);
-      reasons += ` | ⚠ 价格$${price}恰好在${currentTier.pct}档最大补贴点($${maxRewardPrice.toFixed(0)})附近（Gaming信号）`;
+      reasons += ` | ⚠ 价格 $${price} 恰好在 ${currentTier.pct} 档最大补贴点($${maxRewardPrice.toFixed(0)})附近`;
     }
   }
 
-  return { score, reasons };
+  // ── 价格可视化条形图 ──────────────────────────────────────────────────────
+  const scaleMax   = Math.max(pricePerLbMax * 2.5, ppl * 1.5, pricePerLbMin * 4);
+  const minPct     = Math.min(pricePerLbMin / scaleMax * 100, 94).toFixed(1);
+  const maxPct     = Math.min(pricePerLbMax / scaleMax * 100, 94).toFixed(1);
+  const markerPct  = Math.min(Math.max(ppl / scaleMax * 100, 1), 97).toFixed(1);
+  const markerColor = ppl < pricePerLbMin * 0.7 ? '#c62828'
+                    : ppl < pricePerLbMin        ? '#e65100'
+                    : ppl <= pricePerLbMax * 1.5 ? '#2e7d32'
+                    : '#555';
+
+  const vizHtml = `
+    <div style="margin-top:10px;padding:10px 12px;background:#f8f9fa;border-radius:5px;border:1px solid #eee">
+      <div style="font-size:11px;color:#555;margin-bottom:8px">
+        价格/重量比&nbsp;
+        <b style="color:${markerColor};font-size:13px">$${ppl.toFixed(1)}/磅</b>
+        <span style="color:#bbb;margin-left:8px">品类正常区间 $${pricePerLbMin}–$${pricePerLbMax}/磅</span>
+      </div>
+      <div style="position:relative;height:14px;border-radius:3px;overflow:visible;
+        background:linear-gradient(to right,
+          #ffcdd2 0%, #ffcdd2 ${minPct}%,
+          #c8e6c9 ${minPct}%, #c8e6c9 ${maxPct}%,
+          #eeeeee ${maxPct}%, #eeeeee 100%);
+        border:1px solid #ddd">
+        <div style="position:absolute;left:${markerPct}%;top:-5px;width:3px;height:24px;
+          background:${markerColor};border-radius:2px;transform:translateX(-50%);
+          box-shadow:0 0 3px rgba(0,0,0,.25)"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;margin-top:16px;color:#aaa">
+        <span>$0</span>
+        <span style="color:#e57373">$${pricePerLbMin}/磅 下限</span>
+        <span style="color:#66bb6a">$${pricePerLbMax}/磅 上限</span>
+        <span>$${scaleMax.toFixed(0)}</span>
+      </div>
+      <div style="font-size:10px;color:#bbb;margin-top:4px;display:flex;gap:12px">
+        <span><span style="display:inline-block;width:10px;height:8px;background:#ffcdd2;border-radius:2px;vertical-align:middle"></span> 偏低区</span>
+        <span><span style="display:inline-block;width:10px;height:8px;background:#c8e6c9;border-radius:2px;vertical-align:middle"></span> 正常区</span>
+        <span><span style="display:inline-block;width:10px;height:8px;background:#eee;border-radius:2px;vertical-align:middle;border:1px solid #ddd"></span> 偏高区</span>
+      </div>
+    </div>`;
+
+  return { score, reasons, vizHtml };
 }
 
 // ─── MODULE 1: CATEGORY BASELINE ──────────────────────────────────────────
@@ -1252,7 +1291,7 @@ function analyze() {
   const modules = [
     { name:'Module 1 · 品类基准线',  weight:'25%', score: m1.score, reason: m1.reasons },
     { name:'Module 2 · 标题关键词',  weight:'35%', score: m2.score, reason: m2.reasons },
-    { name:'Module 3 · 价格合理性',  weight:'25%', score: m3.score, reason: m3.reasons },
+    { name:'Module 3 · 价格合理性',  weight:'25%', score: m3.score, reason: m3.reasons + (m3.vizHtml || '') },
     { name:'Module 4 · 重量分布偏差',weight:'15%', score: m4.score, reason: m4.reasons },
   ];
 
