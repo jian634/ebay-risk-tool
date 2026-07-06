@@ -199,8 +199,16 @@
 <body>
 
 <header>
-  <h1>eBay Q3 Heavy Goods — Gaming Risk Detection Tool</h1>
-  <p>输入刊登信息，自动评估超大件虚报风险 | Phase 1 Rule Engine</p>
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px">
+    <div>
+      <h1>eBay Q3 Heavy Goods — Gaming Risk Detection Tool</h1>
+      <p>输入刊登信息，自动评估超大件虚报风险 | Phase 1 Rule Engine</p>
+    </div>
+    <div style="flex-shrink:0;text-align:right;padding-top:2px">
+      <button onclick="configApiKey()" style="font-size:11px;padding:4px 12px;border:1px solid rgba(255,255,255,0.55);background:transparent;color:white;border-radius:4px;cursor:pointer;white-space:nowrap">⚙ AI Key</button>
+      <div id="apikey-status" style="font-size:11px;opacity:0.75;margin-top:5px"></div>
+    </div>
+  </div>
 </header>
 
 <div class="container">
@@ -1349,15 +1357,17 @@ async function fetchAiTitleCheck(title, catName, weight) {
   const badge = document.getElementById('ai-title-badge');
   if (!title || !catName) { badge.innerHTML = ''; return; }
   try {
-    const res = await fetch('http://localhost:8002/ai-title-check', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, category_name: catName, weight_lbs: weight }),
-    });
-    if (!res.ok) throw new Error(res.status);
-    const d = await res.json();
-    const pct = Math.round((d.confidence || 0) * 100);
-    const kws = (d.keywords || []).map(k =>
+    const prompt = `你是eBay大重货风控专家。分析以下商品标题是否存在重量申报欺诈风险。\n\n品类：${catName}\n标题：${title}\n申报重量：${weight}lbs\n\n判断标准：\n1. 标题是否刻意用"compact""portable""lightweight""mini"等词掩盖真实重量\n2. 标题描述的商品尺寸/规格与申报重量是否矛盾\n3. 标题是否刻意省略该品类通常会标注的重量或尺寸信息\n\n注意：仅凭标题判断，不要猜测卖家意图。\n\n仅返回纯JSON，不要有任何解释：\n{"suspicious":true或false,"confidence":0到1之间的数字,"reason":"一句话（中文15字以内）","keywords":["触发词"]}`;
+    const text = await _callSf([{ role: 'user', content: prompt }], 120, 0.1);
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('no JSON');
+    const d = JSON.parse(m[0]);
+    d.suspicious = Boolean(d.suspicious);
+    d.confidence = parseFloat(d.confidence || 0.5);
+    d.reason = d.reason || '';
+    d.keywords = d.keywords || [];
+    const pct = Math.round(d.confidence * 100);
+    const kws = d.keywords.map(k =>
       `<span style="background:#fff3e0;color:#e65100;border-radius:3px;padding:1px 5px;margin:0 2px;font-size:11px">${k}</span>`
     ).join('');
     if (d.suspicious) {
@@ -1366,7 +1376,7 @@ async function fetchAiTitleCheck(title, catName, weight) {
           <span style="font-size:14px;flex-shrink:0">⚠️</span>
           <div>
             <span style="font-weight:600;color:#e65100;font-size:12px">标题核查：可疑（置信度 ${pct}%）</span>
-            <div style="color:#666;font-size:12px;margin-top:2px">${d.reason || ''} ${kws}</div>
+            <div style="color:#666;font-size:12px;margin-top:2px">${d.reason} ${kws}</div>
           </div>
         </div>`;
     } else {
@@ -1376,8 +1386,9 @@ async function fetchAiTitleCheck(title, catName, weight) {
           <span style="font-size:12px;color:#558b2f">标题核查：未见明显异常（置信度 ${pct}%）</span>
         </div>`;
     }
-  } catch {
-    badge.innerHTML = '<span style="font-size:11px;color:#ccc">标题核查不可用（需启动本地服务）</span>';
+  } catch (e) {
+    const msg = e.message.includes('API Key') ? '请点击右上角 ⚙ AI Key 配置' : '标题核查不可用';
+    badge.innerHTML = `<span style="font-size:11px;color:#ccc">${msg}</span>`;
   }
 }
 
@@ -1385,27 +1396,61 @@ async function fetchAiTitleCheck(title, catName, weight) {
 async function fetchAiExplain(title, catName, weight, price, score, verdict, m1, m2, m3, m4, cliff, sizeContra, density) {
   const panel = document.getElementById('ai-explain-panel');
   try {
-    const res = await fetch('http://localhost:8002/ai-explain', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title, category_name: catName, weight_lbs: weight, price,
-        score, verdict, m1, m2, m3, m4, cliff,
-        size_contra: sizeContra, density,
-      }),
-    });
-    if (!res.ok) throw new Error(res.status);
-    const d = await res.json();
-    panel.innerHTML = `<span style="font-size:12px;font-weight:600;color:#3665f3;margin-right:6px;letter-spacing:.3px">风控说明</span>${d.explanation || ''}`;
-  } catch {
-    panel.innerHTML = '<span style="font-size:12px;color:#ccc">风控说明不可用（需启动本地服务）</span>';
+    const sigs = [];
+    if (m1 >= 20) sigs.push('品类高风险');
+    if (m2 >= 15) sigs.push('标题异常');
+    if (m3 >= 15) sigs.push('价格/重量比异常');
+    if (m4 >= 15) sigs.push('重量异常');
+    if (cliff > 0) sigs.push('Cliff区间命中');
+    if (sizeContra > 0) sigs.push('尺寸与重量矛盾');
+    if (density > 0) sigs.push('密度异常');
+    const verdictCn = { low:'低风险', medium:'中风险', high:'高风险', block:'极高风险' }[verdict] || verdict;
+    const prompt = `你是eBay大重货风控BD，用一句话（中文，30字以内）说明该刊登为何被标记为${verdictCn}。\n\n商品：${title}\n申报重量：${weight}lbs，价格：$${price}，品类：${catName}\n主要触发信号：${sigs.length ? sigs.join('、') : '综合评估'}\n\n严格要求：\n- 只描述信号，不要提任何具体分数数字\n- 不要加括号注释、不要质疑评分系统、不要加"注："\n- 输出纯文本，一句话结束`;
+    const explanation = await _callSf([{ role: 'user', content: prompt }], 120, 0.2);
+    panel.innerHTML = `<span style="font-size:12px;font-weight:600;color:#3665f3;margin-right:6px;letter-spacing:.3px">风控说明</span>${explanation}`;
+  } catch (e) {
+    const msg = e.message.includes('API Key') ? '请点击右上角 ⚙ AI Key 配置' : '风控说明不可用';
+    panel.innerHTML = `<span style="font-size:12px;color:#ccc">${msg}</span>`;
   }
 }
 
 // ── 反馈提交 ──────────────────────────────────────────────────────────────────
 
-// ── 后端服务地址 ────────────────────────────────────────────────────────────
+// ── 后端服务地址（仅 fetch-item / log-flagged 仍走本地）────────────────────
 const RISK_SERVICE = 'http://localhost:8002';
+
+// ── SiliconFlow 直连（AI 功能，无需本地后端）────────────────────────────────
+function _sfKey() { return localStorage.getItem('sf_api_key') || ''; }
+
+function configApiKey() {
+  const cur = _sfKey();
+  const val = prompt('输入 SiliconFlow API Key（sk-...）\n留空则清除：', cur);
+  if (val === null) return;
+  if (val.trim()) { localStorage.setItem('sf_api_key', val.trim()); }
+  else            { localStorage.removeItem('sf_api_key'); }
+  _updateApiKeyStatus();
+}
+
+function _updateApiKeyStatus() {
+  const el = document.getElementById('apikey-status');
+  if (!el) return;
+  el.textContent = _sfKey() ? '✅ AI Key 已配置' : '⚠ 未配置 AI Key';
+}
+
+async function _callSf(messages, maxTokens = 200, temperature = 0.1) {
+  const key = _sfKey();
+  if (!key) throw new Error('未配置 API Key');
+  const res = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify({ model: 'deepseek-ai/DeepSeek-V3', messages, max_tokens: maxTokens, temperature }),
+  });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(e.error?.message || `HTTP ${res.status}`);
+  }
+  return (await res.json()).choices[0].message.content.trim();
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 批量分析核心
@@ -2087,17 +2132,13 @@ async function fetchAiDimensions() {
   note.textContent = '';
 
   try {
-    const r = await fetch(`${RISK_SERVICE}/ai-dimensions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category_name: catName }),
-      signal: AbortSignal.timeout(30000)
-    });
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({}));
-      throw new Error(e.detail || 'HTTP ' + r.status);
-    }
-    const d = await r.json();
+    const prompt = `你是eBay美国站大重货品类专家。品类名称：${catName}\n\n请给出该品类在eBay上销售的商品的典型外包装尺寸范围（英寸，包装后的尺寸，用于eBay大重货资格判断）。\n\n仅返回纯JSON，不要有任何解释文字：\n{"l_min":数字,"l_max":数字,"w_min":数字,"w_max":数字,"h_min":数字,"h_max":数字,"note":"一句话简短说明（中文）"}`;
+    const text = await _callSf([{ role: 'user', content: prompt }], 200, 0.1);
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error('no JSON');
+    const d = JSON.parse(m[0]);
+    for (const k of ['l_min','l_max','w_min','w_max','h_min','h_max']) d[k] = parseFloat(d[k] || 0);
+    d.note = d.note || '';
     _lastAiDims = d;
     ranges.innerHTML = `
       <div class="ai-dim-item"><span>最长边 (in)</span><span>${d.l_min} – ${d.l_max}"</span></div>
@@ -2106,8 +2147,9 @@ async function fetchAiDimensions() {
     `;
     note.textContent = d.note ? `📝 ${d.note}` : '';
   } catch (e) {
-    ranges.innerHTML = `<span style="color:#c0392b;font-size:11px">⚠ AI 不可用：${e.message}</span>`;
-    note.textContent = '请确认 risk_service.py 已启动';
+    const isKeyErr = e.message.includes('API Key');
+    ranges.innerHTML = `<span style="color:#c0392b;font-size:11px">⚠ AI 不可用：${isKeyErr ? '未配置 API Key' : e.message}</span>`;
+    note.textContent = isKeyErr ? '请点击右上角 ⚙ AI Key 配置' : '';
   }
 }
 
@@ -2156,6 +2198,9 @@ function renderAiRefPanel(d1, d2, d3) {
       ${ai.note ? `<div style="font-size:11px;color:#666;margin-top:8px;padding-top:6px;border-top:1px solid #d0deff">💬 ${ai.note}</div>` : ''}
     </div>`;
 }
+
+// 页面加载时更新 API Key 状态
+document.addEventListener('DOMContentLoaded', _updateApiKeyStatus);
 </script>
 
 </body>
